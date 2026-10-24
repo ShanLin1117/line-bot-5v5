@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS members (
 CREATE TABLE IF NOT EXISTS weeks (
     game_date TEXT PRIMARY KEY,
     deadline  TEXT NOT NULL,
-    capacity  INTEGER NOT NULL DEFAULT 20
+    capacity  INTEGER NOT NULL DEFAULT 20,
+    kind      TEXT NOT NULL DEFAULT 'regular',
+    note      TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS registrations (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,6 +61,18 @@ class Database:
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """舊資料庫補上後來新增的欄位。CREATE TABLE IF NOT EXISTS 不會修改已存在的表。"""
+        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(weeks)")}
+        with self.conn:
+            if "kind" not in columns:
+                self.conn.execute(
+                    "ALTER TABLE weeks ADD COLUMN kind TEXT NOT NULL DEFAULT 'regular'"
+                )
+            if "note" not in columns:
+                self.conn.execute("ALTER TABLE weeks ADD COLUMN note TEXT NOT NULL DEFAULT ''")
 
     # --- 設定 ---
 
@@ -136,22 +150,52 @@ class Database:
 
     # --- 場次 ---
 
-    def create_week(self, game_date: str, deadline: datetime, capacity: int = 20) -> bool:
+    def create_week(
+        self,
+        game_date: str,
+        deadline: datetime,
+        capacity: int = 20,
+        kind: str = "regular",
+        note: str = "",
+    ) -> bool:
         """建立場次；同一天已存在則回傳 False。"""
         try:
             with self.conn:
                 self.conn.execute(
-                    "INSERT INTO weeks(game_date, deadline, capacity) VALUES (?, ?, ?)",
-                    (game_date, deadline.isoformat(), capacity),
+                    "INSERT INTO weeks(game_date, deadline, capacity, kind, note) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (game_date, deadline.isoformat(), capacity, kind, note),
                 )
         except sqlite3.IntegrityError:
             return False
         return True
 
     def current_week(self) -> Week | None:
-        """目前場次 = 比賽日期最晚的那一場。"""
-        row = self.conn.execute("SELECT * FROM weeks ORDER BY game_date DESC LIMIT 1").fetchone()
+        """目前的例行場 = 比賽日期最晚的那一場例行場（加開場不算）。"""
+        row = self.conn.execute(
+            "SELECT * FROM weeks WHERE kind = 'regular' ORDER BY game_date DESC LIMIT 1"
+        ).fetchone()
         return self._week(row)
+
+    def open_extras(self, today: str) -> list[Week]:
+        """尚未過期的加開場，依日期排序。today 為 YYYY-MM-DD。"""
+        rows = self.conn.execute(
+            "SELECT * FROM weeks WHERE kind = 'extra' AND game_date >= ? ORDER BY game_date",
+            (today,),
+        ).fetchall()
+        return [self._week(r) for r in rows]
+
+    def delete_week(self, game_date: str) -> int:
+        """刪除場次與它的所有報名紀錄，回傳被刪除的有效報名數。"""
+        with self.conn:
+            active = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM registrations "
+                "WHERE game_date = ? AND cancelled_at IS NULL",
+                (game_date,),
+            ).fetchone()["n"]
+            self.conn.execute("DELETE FROM registrations WHERE game_date = ?", (game_date,))
+            self.conn.execute("DELETE FROM weeks WHERE game_date = ?", (game_date,))
+        return active
 
     def get_week(self, game_date: str) -> Week | None:
         row = self.conn.execute("SELECT * FROM weeks WHERE game_date = ?", (game_date,)).fetchone()
@@ -165,6 +209,8 @@ class Database:
             game_date=row["game_date"],
             deadline=datetime.fromisoformat(row["deadline"]),
             capacity=row["capacity"],
+            kind=row["kind"],
+            note=row["note"],
         )
 
     def get_card_info(self) -> dict[str, str]:

@@ -23,6 +23,12 @@ class Week:
     game_date: str  # 比賽日期 YYYY-MM-DD，同時是場次的識別
     deadline: datetime
     capacity: int
+    kind: str = "regular"  # regular = 例行場（季打與零打）；extra = 加開場（先搶先贏）
+    note: str = ""  # 加開場的說明文字（時間、地點等），顯示在卡片上
+
+    @property
+    def is_extra(self) -> bool:
+        return self.kind == "extra"
 
 
 @dataclass(frozen=True)

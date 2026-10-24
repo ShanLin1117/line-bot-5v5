@@ -2,7 +2,7 @@
 from datetime import datetime, timedelta
 
 from app.models import TZ, Entry, Week
-from app.roster import compute_roster, format_roster
+from app.roster import compute_roster, format_roster, roster_for
 
 T0 = datetime(2026, 10, 18, 20, 0, tzinfo=TZ)  # 週日 20:00 開放報名
 DEADLINE = datetime(2026, 10, 23, 12, 30, tzinfo=TZ)  # 週五 12:30 截止
@@ -138,6 +138,27 @@ def test_format_roster_matches_group_style():
     assert "3.Brant" in lines
     assert "📍候補2位" in lines
     assert lines[-1].startswith("名額 20/20｜報名截止 10/23 12:30（未截止）")
+
+
+def test_extra_week_ignores_season_and_deadline():
+    extra = Week(game_date="2026-11-06", deadline=DEADLINE, capacity=2, kind="extra")
+    entries = [
+        entry(1, False, LATE + timedelta(days=1)),  # 全部都晚於「截止時間」
+        entry(2, True, LATE + timedelta(days=2)),  # 季打也沒有保障
+        entry(3, True, LATE + timedelta(days=3)),
+    ]
+
+    roster = roster_for(entries, extra)
+
+    assert ids(roster.confirmed) == [1, 2]
+    assert ids(roster.waitlist) == [3]
+
+
+def test_regular_week_still_gives_season_priority():
+    regular = Week(game_date="2026-11-01", deadline=DEADLINE, capacity=2)
+    entries = [entry(1, False, minutes(1)), entry(2, True, minutes(2)), entry(3, True, minutes(3))]
+
+    assert ids(roster_for(entries, regular).confirmed) == [2, 3]
 
 
 def test_format_roster_empty():

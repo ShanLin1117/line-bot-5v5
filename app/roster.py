@@ -3,10 +3,10 @@
 刻意寫成純函式：輸入報名紀錄，輸出正取與候補，不碰資料庫與 LINE，
 所以可以用單元測試把每條規則驗證清楚。
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
-from app.models import Entry, Week
+from app.models import TZ, Entry, Week
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,11 @@ def compute_roster(entries: list[Entry], deadline: datetime, capacity: int) -> R
 
 
 def roster_for(entries: list[Entry], week: Week) -> Roster:
+    if week.is_extra:
+        # 加開場：不分季打零打、也沒有截止的概念，一律依報名時間先搶先贏。
+        # 做法是把所有人都當成零打，且截止時間設在遙遠的未來
+        everyone = [replace(e, is_season=False) for e in entries]
+        return compute_roster(everyone, datetime(9999, 1, 1, tzinfo=TZ), week.capacity)
     return compute_roster(entries, week.deadline, week.capacity)
 
 
@@ -46,28 +51,42 @@ def _fmt_time(dt: datetime) -> str:
 def format_roster(week: Week, roster: Roster, now: datetime) -> str:
     """輸出成群組裡慣用的名單格式。"""
     game = datetime.fromisoformat(week.game_date)
-    lines = [f"{game.month}/{game.day} 🏀正取名單{len(roster.confirmed)}位"]
-
-    seasons = [e for e in roster.confirmed if e.is_season]
-    casuals = [e for e in roster.confirmed if not e.is_season]
-    number = 0
+    title = "加開場" if week.is_extra else ""
+    lines = [f"{game.month}/{game.day} 🏀{title}正取名單{len(roster.confirmed)}位"]
+    if week.note:
+        lines.append(week.note)
 
     if not roster.confirmed:
         lines += ["", "（目前還沒有人報名）"]
-    if seasons:
-        lines += ["", f"📍季打{len(seasons)}位"]
-        for e in seasons:
+
+    # 加開場不分季打零打，所有正取放在同一區；例行場依身分分兩區，編號連續
+    if week.is_extra:
+        sections = [("正取", roster.confirmed)]
+    else:
+        sections = [
+            ("季打", [e for e in roster.confirmed if e.is_season]),
+            ("零打", [e for e in roster.confirmed if not e.is_season]),
+        ]
+    number = 0
+    for name, members in sections:
+        if not members:
+            continue
+        lines += ["", f"📍{name}{len(members)}位"]
+        for e in members:
             number += 1
             lines.append(f"{number}.{e.label}")
-    if casuals:
-        lines += ["", f"📍零打{len(casuals)}位"]
-        for e in casuals:
-            number += 1
-            lines.append(f"{number}.{e.label}")
+
     if roster.waitlist:
         lines += ["", f"📍候補{len(roster.waitlist)}位"]
         lines += [e.label for e in roster.waitlist]
 
-    state = "已截止" if now > week.deadline else "未截止"
-    lines += ["", f"名額 {len(roster.confirmed)}/{week.capacity}｜報名截止 {_fmt_time(week.deadline)}（{state}）"]
+    if week.is_extra:
+        footer = f"名額 {len(roster.confirmed)}/{week.capacity}｜加開場，依報名順序（先搶先贏）"
+    else:
+        state = "已截止" if now > week.deadline else "未截止"
+        footer = (
+            f"名額 {len(roster.confirmed)}/{week.capacity}"
+            f"｜報名截止 {_fmt_time(week.deadline)}（{state}）"
+        )
+    lines += ["", footer]
     return "\n".join(lines)
