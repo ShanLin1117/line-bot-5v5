@@ -7,7 +7,10 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from app.card import INFO_FIELDS
 from app.models import Entry, Member, Week
+
+BOUND_GROUP_KEY = "bound_group_id"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -148,13 +151,30 @@ class Database:
     def current_week(self) -> Week | None:
         """目前場次 = 比賽日期最晚的那一場。"""
         row = self.conn.execute("SELECT * FROM weeks ORDER BY game_date DESC LIMIT 1").fetchone()
-        if not row:
+        return self._week(row)
+
+    def get_week(self, game_date: str) -> Week | None:
+        row = self.conn.execute("SELECT * FROM weeks WHERE game_date = ?", (game_date,)).fetchone()
+        return self._week(row)
+
+    @staticmethod
+    def _week(row: sqlite3.Row | None) -> Week | None:
+        if row is None:
             return None
         return Week(
             game_date=row["game_date"],
             deadline=datetime.fromisoformat(row["deadline"]),
             capacity=row["capacity"],
         )
+
+    def get_card_info(self) -> dict[str, str]:
+        """報名卡上顯示的地點、時間、費用、備註（管理員用 /設定 維護）。"""
+        info = {}
+        for key in INFO_FIELDS.values():
+            value = self.get_setting(f"info_{key}")
+            if value:
+                info[key] = value
+        return info
 
     # --- 報名 ---
 
