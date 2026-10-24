@@ -3,8 +3,15 @@ from datetime import datetime
 
 import pytest
 
+from app.card import Card
 from app.db import Database
-from app.handlers import Context, check_group, handle_command
+from app.handlers import (
+    Context,
+    check_group,
+    check_group_postback,
+    handle_command,
+    handle_postback,
+)
 from app.models import TZ
 
 GROUP = "G1"
@@ -202,3 +209,92 @@ def test_unknown_text_is_ignored(ready):
 
 def test_help(ready):
     assert "指令說明" in say(ready, "Bob", "/說明")
+
+
+# --- 報名卡按鈕 ---
+
+
+def press(db, user: str, action: str, week: str = "2026-10-25", now: datetime = NOW):
+    """模擬某位使用者按下報名卡上的按鈕。"""
+    return handle_postback(Context(db, GROUP, f"U-{user}", user, now), f"a={action}&w={week}")
+
+
+def test_check_group_postback():
+    assert check_group_postback(None, "G1") == "ignore"
+    assert check_group_postback("G1", "G1") == "allow"
+    assert check_group_postback("G1", "G2") == "leave"
+
+
+def test_buttons_register_cancel_and_roster(ready):
+    assert "Bob 報名成功（零打）" in press(ready, "Bob", "register", now=at(1))
+    assert "已經報名過了" in press(ready, "Bob", "register", now=at(2))
+    assert "1.Bob" in press(ready, "Bob", "roster", now=at(3))
+
+    assert "Bob 已取消" in press(ready, "Bob", "cancel", now=at(4))
+    assert "目前沒有報名" in press(ready, "Bob", "cancel", now=at(5))
+
+
+def test_guest_button_names_friends_automatically(ready):
+    first = press(ready, "Bob", "guest", now=at(1))
+    second = press(ready, "Bob", "guest", now=at(2))
+
+    assert "Bob友1 報名成功（零打）" in first
+    assert "Bob友2 報名成功（零打）" in second
+    assert "3.Bob友2（Bob 帶）" not in second  # 回覆只有一行狀態，不是整份名單
+
+    say(ready, "Bob", "/取消帶人 Bob友1", at(3))
+    assert "Bob友1 報名成功" in press(ready, "Bob", "guest", now=at(4))  # 空出的編號會被重用
+
+
+def test_old_card_cannot_register_for_a_new_week(ready):
+    say(ready, "Admin", "/開週 11/01")
+
+    reply = press(ready, "Bob", "register", week="2026-10-25", now=at(1))
+
+    assert "已經過期" in reply
+    assert "沒有報名" in say(ready, "Bob", "/取消", at(2))
+
+
+def test_unknown_button_is_ignored(ready):
+    assert press(ready, "Bob", "hack") is None
+
+
+def test_card_command_returns_card_for_admin_only(ready):
+    assert "只有管理員" in say(ready, "Bob", "/報名卡")
+
+    card = say(ready, "Admin", "/報名卡")
+
+    assert isinstance(card, Card)
+    assert "10/25" in card.alt_text
+
+
+def test_card_command_without_week(db):
+    say(db, "Admin", "/初始化")
+    assert "沒有開放報名" in say(db, "Admin", "/報名卡")
+
+
+# --- 卡片資訊設定 ---
+
+
+def test_info_settings_flow_into_card(ready):
+    assert "只有管理員" in say(ready, "Bob", "/設定 地點 某球場")
+    assert "已設定地點：威湧運動中心" in say(ready, "Admin", "/設定 地點 威湧運動中心")
+    say(ready, "Admin", "/設定 時間 07:00-09:00")
+    say(ready, "Admin", "/設定 費用 200")
+
+    overview = say(ready, "Admin", "/設定")
+    assert "地點：威湧運動中心" in overview and "備註：（未設定）" in overview
+
+    card = say(ready, "Admin", "/報名卡")
+    texts = str(card.contents)
+    assert "威湧運動中心" in texts and "07:00-09:00" in texts and "NT$200" in texts
+
+
+def test_info_settings_validation_and_clear(ready):
+    assert "可設定的項目" in say(ready, "Admin", "/設定 不存在 xx")
+
+    say(ready, "Admin", "/設定 備註 第15季 4/13次")
+    assert ready.get_card_info()["note"] == "第15季 4/13次"
+
+    assert "已清除備註" in say(ready, "Admin", "/設定 備註")
+    assert "note" not in ready.get_card_info()

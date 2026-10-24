@@ -4,18 +4,33 @@ Java 對照：相當於 @SpringBootApplication 加 @RestController。
 啟動方式：uvicorn app.main:app --reload
 （app.main 是模組路徑，:app 是模組內名為 app 的物件，相當於 Spring 的 main 類別）
 """
+import asyncio
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from linebot.v3 import WebhookParser
 from linebot.v3.exceptions import InvalidSignatureError
-from linebot.v3.webhooks import GroupSource, JoinEvent, MessageEvent, TextMessageContent
+from linebot.v3.webhooks import (
+    GroupSource,
+    JoinEvent,
+    MessageEvent,
+    PostbackEvent,
+    TextMessageContent,
+)
 
-from app import line_client
+from app import line_client, scheduler
+from app.card import Card
 from app.config import load_settings
-from app.db import Database
-from app.handlers import BOUND_GROUP_KEY, Context, check_group, handle_command
+from app.db import BOUND_GROUP_KEY, Database
+from app.handlers import (
+    Context,
+    check_group,
+    check_group_postback,
+    handle_command,
+    handle_postback,
+)
 from app.models import TZ
 
 # 預設 Python 只顯示 WARNING 以上，要設定才看得到我們自己的 INFO log
@@ -25,7 +40,22 @@ logger = logging.getLogger("line-bot-5v5")
 settings = load_settings()
 parser = WebhookParser(settings.channel_secret)  # 負責驗證簽章並解析事件
 db = Database(settings.db_path)
-app = FastAPI(title="line-bot-5v5")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """伺服器啟動時開始排程、關閉時停止。Java 對照：@PostConstruct / @PreDestroy。"""
+
+    # 透過 line_client.push_card 呼叫（而不是直接傳函式），測試時才能替換成假的
+    async def push(group_id: str, card: Card) -> None:
+        await line_client.push_card(group_id, card)
+
+    task = asyncio.create_task(scheduler.run_forever(db, push))
+    yield
+    task.cancel()
+
+
+app = FastAPI(title="line-bot-5v5", lifespan=lifespan)
 
 
 # 裝飾器 @app.get 相當於 Spring 的 @GetMapping("/health")
@@ -72,11 +102,15 @@ async def process_event(event) -> None:
             await line_client.leave_group(group_id)
         return
 
-    if not (isinstance(event, MessageEvent) and isinstance(event.message, TextMessageContent)):
+    if isinstance(event, MessageEvent) and isinstance(event.message, TextMessageContent):
+        text = event.message.text
+        action = check_group(bound, group_id, text)
+    elif isinstance(event, PostbackEvent):
+        text = None
+        action = check_group_postback(bound, group_id)
+    else:
         return
-    text = event.message.text
 
-    action = check_group(bound, group_id, text)
     if action == "leave":
         logger.warning("left unauthorized group %s", group_id)
         await line_client.leave_group(group_id)
@@ -84,9 +118,26 @@ async def process_event(event) -> None:
     if action == "ignore":
         return
 
+    ctx = await build_context(event, group_id)
+    if ctx is None:
+        return
+    if text is not None:
+        reply = handle_command(ctx, text)
+        logger.info("text=%r reply=%r", text, reply)
+    else:
+        reply = handle_postback(ctx, event.postback.data)
+        logger.info("postback=%r reply=%r", event.postback.data, reply)
+
+    if isinstance(reply, Card):
+        await line_client.reply_card(event.reply_token, reply)
+    elif reply is not None:
+        await line_client.reply_text(event.reply_token, reply)
+
+
+async def build_context(event, group_id: str) -> Context | None:
     user_id = event.source.user_id
     if user_id is None:
-        return
+        return None
 
     # 每次查最新的顯示名稱；查詢失敗時退回已記錄的名稱
     known = db.get_member_by_user_id(user_id)
@@ -95,9 +146,4 @@ async def process_event(event) -> None:
     except Exception:
         logger.exception("failed to fetch display name")
         name = known.display_name if known else "未知成員"
-
-    ctx = Context(db=db, group_id=group_id, user_id=user_id, display_name=name, now=datetime.now(TZ))
-    reply = handle_command(ctx, text)
-    logger.info("text=%r reply=%r", text, reply)
-    if reply is not None:
-        await line_client.reply_text(event.reply_token, reply)
+    return Context(db=db, group_id=group_id, user_id=user_id, display_name=name, now=datetime.now(TZ))

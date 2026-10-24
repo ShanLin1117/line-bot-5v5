@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import os
+from datetime import datetime, timedelta
 
 # 必須在 import app 之前設定，因為 app.main 載入時就會讀取設定
 os.environ["LINE_CHANNEL_SECRET"] = "test-secret"
@@ -18,6 +19,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app import line_client  # noqa: E402
 from app.db import Database  # noqa: E402
 from app.main import app  # noqa: E402
+from app.models import TZ  # noqa: E402
 
 client = TestClient(app)
 
@@ -60,6 +62,19 @@ def join_event(group_id: str) -> dict:
     }
 
 
+def postback_event(group_id: str, user_id: str, data: str) -> dict:
+    return {
+        "type": "postback",
+        "mode": "active",
+        "timestamp": 1,
+        "webhookEventId": "03",
+        "deliveryContext": {"isRedelivery": False},
+        "source": {"type": "group", "groupId": group_id, "userId": user_id},
+        "replyToken": "token-3",
+        "postback": {"data": data},
+    }
+
+
 @pytest.fixture
 def line(monkeypatch):
     """換成記憶體資料庫，並把對 LINE 的呼叫換成假的，記錄呼叫內容。
@@ -67,10 +82,13 @@ def line(monkeypatch):
     monkeypatch 相當於 Mockito 的 mock/when：測試結束後會自動還原。
     """
     monkeypatch.setattr("app.main.db", Database(":memory:"))
-    calls = {"replies": [], "left": []}
+    calls = {"replies": [], "left": [], "cards": []}
 
     async def fake_reply(reply_token, text):
         calls["replies"].append((reply_token, text))
+
+    async def fake_reply_card(reply_token, card):
+        calls["cards"].append((reply_token, card))
 
     async def fake_leave(group_id):
         calls["left"].append(group_id)
@@ -79,6 +97,7 @@ def line(monkeypatch):
         return "Shan"
 
     monkeypatch.setattr(line_client, "reply_text", fake_reply)
+    monkeypatch.setattr(line_client, "reply_card", fake_reply_card)
     monkeypatch.setattr(line_client, "leave_group", fake_leave)
     monkeypatch.setattr(line_client, "get_display_name", fake_name)
     return calls
@@ -147,6 +166,53 @@ def test_joining_other_group_makes_bot_leave(line):
 def test_joining_before_binding_does_not_leave(line):
     post([join_event("G1")])
     assert line["left"] == []
+
+
+def open_week_in_two_weeks() -> str:
+    """開一個兩週後的場次（用實際日期，避免日期過了之後測試失效）。"""
+    game_date = (datetime.now(TZ) + timedelta(days=14)).date().isoformat()
+    post([message_event("G1", "U1", "/初始化")])
+    post([message_event("G1", "U1", f"/開週 {game_date}")])
+    return game_date
+
+
+def test_card_command_replies_with_flex_card(line):
+    open_week_in_two_weeks()
+
+    post([message_event("G1", "U1", "/報名卡")])
+
+    assert len(line["cards"]) == 1
+    token, card = line["cards"][0]
+    assert token == "token-1"
+    assert "籃球報名" in card.alt_text
+
+
+def test_button_press_registers_and_replies(line):
+    game_date = open_week_in_two_weeks()
+    line["replies"].clear()
+
+    post([postback_event("G1", "U2", f"a=register&w={game_date}")])
+
+    assert len(line["replies"]) == 1
+    token, text = line["replies"][0]
+    assert token == "token-3"
+    assert "Shan 報名成功（零打）" in text
+
+
+def test_button_press_from_other_group_makes_bot_leave(line):
+    game_date = open_week_in_two_weeks()
+    line["replies"].clear()
+
+    post([postback_event("G2", "U2", f"a=register&w={game_date}")])
+
+    assert line["left"] == ["G2"]
+    assert line["replies"] == []
+
+
+def test_button_press_before_binding_is_ignored(line):
+    post([postback_event("G1", "U2", "a=register&w=2026-11-01")])
+
+    assert line["replies"] == [] and line["left"] == []
 
 
 def test_reply_failure_does_not_break_webhook(line, monkeypatch):

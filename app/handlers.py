@@ -5,15 +5,18 @@ Java 對照：相當於 Service 層。所有函式只依賴 Database 與 Context
 """
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime
+from urllib.parse import parse_qs
 
-from app.db import Database
-from app.models import TZ, Member, Week
+from app.card import INFO_FIELDS, Card, build_card
+from app.db import BOUND_GROUP_KEY, Database
+from app.models import Member, Week
 from app.roster import format_roster, roster_for
-
-BOUND_GROUP_KEY = "bound_group_id"
+from app.scheduler import default_deadline
 
 HELP_TEXT = """📖 指令說明
+每週日 20:00 Bot 會自動發出報名卡，直接按按鈕即可。
+也可以用指令：
 /報名　報名本場次
 /取消　取消自己的報名
 /帶人 阿豪　幫朋友報名
@@ -22,7 +25,9 @@ HELP_TEXT = """📖 指令說明
 /成員　列出成員與編號
 
 🔧 管理員
-/開週 10/25　開放場次報名
+/報名卡　重新發出本場次的報名卡
+/設定 地點 威湧運動中心　設定卡片資訊（地點、時間、費用、備註）
+/開週 10/25　手動開放場次報名
 /設季打 3 7 12　依編號標記季打
 /取消季打 5　取消季打標記
 /重設季打　新季開始時清除全部季打
@@ -51,7 +56,31 @@ def check_group(bound_group_id: str | None, group_id: str, text: str) -> str:
     return "allow"
 
 
-def handle_command(ctx: Context, text: str) -> str | None:
+def check_group_postback(bound_group_id: str | None, group_id: str) -> str:
+    """按鈕事件的群組檢查：尚未綁定時一律忽略，其他群組一律退出。"""
+    if bound_group_id is None:
+        return "ignore"
+    return "allow" if group_id == bound_group_id else "leave"
+
+
+def handle_postback(ctx: Context, data: str) -> str | None:
+    """處理報名卡按鈕。data 格式：a=動作&w=場次日期，例如 a=register&w=2026-11-01。"""
+    params = parse_qs(data)
+    action = params.get("a", [""])[0]
+    game_date = params.get("w", [""])[0]
+    handler = POSTBACK_ACTIONS.get(action)
+    if handler is None:
+        return None
+
+    member = ctx.db.upsert_member(ctx.user_id, ctx.display_name)
+    week = _active_week(ctx)
+    if week is None or week.game_date != game_date:
+        # 舊的報名卡仍然可以按，但場次已經換了，不能讓人誤報到新的場次
+        return "這張報名卡已經過期，請使用最新的報名卡，或傳 /名單 查看目前場次"
+    return handler(ctx, member, [])
+
+
+def handle_command(ctx: Context, text: str) -> str | Card | None:
     """依指令回傳要回覆的內容；不是指令則回傳 None（不回覆）。
 
     `str | None` 是型別提示，相當於 Java 的 Optional<String>，
@@ -139,8 +168,7 @@ def cmd_open_week(ctx: Context, member: Member, args: list[str]) -> str:
     if game_date < ctx.now.date():
         return "這個日期已經過了"
 
-    # 預設截止時間：比賽日往前 2 天的 12:30（週日場次 → 週五中午）
-    deadline = datetime.combine(game_date - timedelta(days=2), time(12, 30), tzinfo=TZ)
+    deadline = default_deadline(game_date)
     if not ctx.db.create_week(game_date.isoformat(), deadline):
         return f"{game_date.month}/{game_date.day} 的場次已經存在了"
     return (
@@ -217,6 +245,18 @@ def cmd_guest_cancel(ctx: Context, member: Member, args: list[str]) -> str:
     return _cancel(ctx, member, " ".join(args))
 
 
+def cmd_guest_auto(ctx: Context, member: Member, args: list[str]) -> str:
+    """「帶朋友 +1」按鈕：自動命名為「名稱友1」「名稱友2」…，不用打字。"""
+    week = _active_week(ctx)
+    if week is None:
+        return NO_WEEK
+    n = 1
+    while ctx.db.find_active(week.game_date, member.id, f"{member.display_name}友{n}") is not None:
+        n += 1
+    reply = _register(ctx, member, f"{member.display_name}友{n}")
+    return reply + "\n要改名字請先 /取消帶人 再用 /帶人 名字"
+
+
 def cmd_roster(ctx: Context, member: Member, args: list[str]) -> str:
     week = _active_week(ctx)
     if week is None:
@@ -287,6 +327,34 @@ def cmd_admin(ctx: Context, member: Member, args: list[str]) -> str:
     return f"✅ {target.display_name} 已成為管理員"
 
 
+def cmd_card(ctx: Context, member: Member, args: list[str]) -> str | Card:
+    week = _active_week(ctx)
+    if week is None:
+        return NO_WEEK
+    return build_card(week, ctx.db.get_card_info())
+
+
+def cmd_info(ctx: Context, member: Member, args: list[str]) -> str:
+    """設定報名卡上顯示的資訊，例如 /設定 地點 威湧運動中心。"""
+    if not args:
+        info = ctx.db.get_card_info()
+        lines = ["⚙️ 目前卡片資訊"]
+        for label, key in INFO_FIELDS.items():
+            lines.append(f"{label}：{info.get(key, '（未設定）')}")
+        lines.append("設定方式：/設定 地點 威湧運動中心（想清除就不填內容）")
+        return "\n".join(lines)
+
+    label, value = args[0], " ".join(args[1:])
+    key = INFO_FIELDS.get(label)
+    if key is None:
+        return "可設定的項目：" + "、".join(INFO_FIELDS)
+    if value:
+        ctx.db.set_setting(f"info_{key}", value)
+        return f"✅ 已設定{label}：{value}\n之後發出的報名卡會使用新內容"
+    ctx.db.delete_setting(f"info_{key}")
+    return f"✅ 已清除{label}"
+
+
 def cmd_help(ctx: Context, member: Member, args: list[str]) -> str:
     return HELP_TEXT
 
@@ -306,7 +374,19 @@ COMMANDS = {
     "/取消季打": cmd_unset_season,
     "/重設季打": cmd_reset_season,
     "/管理員": cmd_admin,
+    "/報名卡": cmd_card,
+    "/設定": cmd_info,
     "/說明": cmd_help,
 }
 
-ADMIN_COMMANDS = {"/解除綁定", "/開週", "/設季打", "/取消季打", "/重設季打", "/管理員"}
+ADMIN_COMMANDS = {
+    "/解除綁定", "/開週", "/設季打", "/取消季打", "/重設季打", "/管理員", "/報名卡", "/設定",
+}
+
+# 報名卡按鈕對照表，動作名稱與 card.py 的 postback data 一致
+POSTBACK_ACTIONS = {
+    "register": cmd_register,
+    "cancel": cmd_cancel,
+    "guest": cmd_guest_auto,
+    "roster": cmd_roster,
+}
