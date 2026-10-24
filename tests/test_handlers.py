@@ -1,4 +1,5 @@
 """指令處理測試。用記憶體內的 SQLite，不需要任何外部服務。"""
+import random
 from datetime import datetime
 
 import pytest
@@ -470,6 +471,123 @@ def test_cancel_extra_without_registrations_and_validation(ready):
 def test_cancel_extra_refuses_the_regular_week(ready):
     assert "找不到 10/25 的加開場" in say(ready, "Admin", "/取消加開場 10/25")
     assert ready.current_week().game_date == "2026-10-25"
+
+
+# --- 分組 ---
+
+
+def fill(db, n: int, suffix: str = ""):
+    """讓 P00 ~ P(n-1) 依序報名；suffix 可以帶日期來報加開場。"""
+    for i in range(n):
+        say(db, f"P{i:02d}", f"/報名{suffix}", at(i))
+
+
+def say_seeded(db, user: str, text: str, seed: int):
+    ctx = Context(db, GROUP, f"U-{user}", user, NOW, rng=random.Random(seed))
+    return handle_command(ctx, text)
+
+
+def team_lines(text: str) -> list[str]:
+    return [line for line in text.split("\n") if line.startswith("【")]
+
+
+def test_teams_require_admin_but_result_is_open_to_everyone(ready):
+    fill(ready, 4)
+
+    assert "只有管理員" in say(ready, "Bob", "/分組")
+    assert "只有管理員" in say(ready, "Bob", "/重新分組")
+    assert "還沒有分組" in say(ready, "Bob", "/分組結果")
+
+
+def test_teams_split_19_players_into_5_5_5_4(ready):
+    fill(ready, 19)
+
+    text = say(ready, "Admin", "/分組")
+
+    assert team_lines(text) == ["【A 隊】5 人", "【B 隊】5 人", "【C 隊】5 人", "【D 隊】4 人"]
+    assert text.startswith("🏀 10/25 分組結果（共 19 人）")
+    for i in range(19):
+        assert text.count(f"P{i:02d}") == 1  # 每個人只出現一次
+
+
+def test_teams_use_only_confirmed_players_not_the_waitlist(ready):
+    fill(ready, 22)  # 20 位正取、2 位候補
+
+    text = say(ready, "Admin", "/分組")
+
+    assert "共 20 人" in text
+    assert "P20" not in text and "P21" not in text
+
+
+def test_teams_cannot_be_redrawn_by_pressing_again(ready):
+    fill(ready, 20)
+    first = say(ready, "Admin", "/分組")
+
+    again = say(ready, "Admin", "/分組")
+
+    assert "已經分組過了" in again and "/重新分組" in again
+    assert again.endswith(first)  # 結果完全相同
+    assert say(ready, "Bob", "/分組結果") == first
+
+
+def test_reteam_replaces_the_previous_result(ready):
+    fill(ready, 20)
+    first = say_seeded(ready, "Admin", "/分組", seed=1)
+
+    redo = say_seeded(ready, "Admin", "/重新分組", seed=2)
+
+    assert redo.startswith("🔁 已重新分組，原本的結果已作廢")
+    assert redo.endswith(say(ready, "Bob", "/分組結果"))  # 之後查到的是新結果
+    assert say(ready, "Bob", "/分組結果") != first
+
+
+def test_reteam_without_previous_result_just_makes_teams(ready):
+    fill(ready, 10)
+
+    text = say(ready, "Admin", "/重新分組")
+
+    assert not text.startswith("🔁") and "共 10 人" in text
+
+
+def test_teams_need_at_least_two_players(ready):
+    assert "正取人數不足" in say(ready, "Admin", "/分組")
+    fill(ready, 1)
+    assert "正取人數不足" in say(ready, "Admin", "/分組")
+
+
+def test_teams_are_a_snapshot_and_ignore_later_cancellations(ready):
+    fill(ready, 8)
+    say(ready, "Admin", "/分組")
+
+    say(ready, "P00", "/取消", at(30))
+
+    assert "P00" in say(ready, "Bob", "/分組結果")
+
+
+def test_teams_for_an_extra_session_use_the_date(ready):
+    open_extra(ready, "/加開場 11/06 15")
+    fill(ready, 15, suffix=" 11/06")
+
+    text = say(ready, "Admin", "/分組 11/06")
+
+    assert text.startswith("🏀 11/6 加開場分組結果（共 15 人）")
+    assert team_lines(text) == ["【A 隊】5 人", "【B 隊】5 人", "【C 隊】5 人"]
+    assert "還沒有分組" in say(ready, "Bob", "/分組結果")  # 例行場沒有被影響
+    assert "加開場分組結果" in say(ready, "Bob", "/分組結果 11/06")
+
+
+def test_teams_unknown_date(ready):
+    assert "找不到 12/25 的場次" in say(ready, "Admin", "/分組 12/25")
+
+
+def test_cancel_extra_also_removes_its_teams(ready):
+    open_extra(ready, "/加開場 11/06 15")
+    fill(ready, 6, suffix=" 11/06")
+    say(ready, "Admin", "/分組 11/06")
+
+    say(ready, "Admin", "/取消加開場 11/06")
+
+    assert ready.get_teams("2026-11-06") is None
 
 
 # --- 卡片資訊設定 ---

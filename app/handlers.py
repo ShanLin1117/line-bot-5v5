@@ -3,8 +3,9 @@
 Java 對照：相當於 Service 層。所有函式只依賴 Database 與 Context，
 不依賴 LINE SDK 與 FastAPI，所以可以直接單元測試。
 """
+import random
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from urllib.parse import parse_qs
 
@@ -13,6 +14,7 @@ from app.db import BOUND_GROUP_KEY, Database
 from app.models import TZ, Member, Week
 from app.roster import format_roster, roster_for
 from app.scheduler import default_deadline, next_open, target_game_date
+from app.teams import format_teams, split_into_teams
 
 HELP_TEXT = """📖 指令說明
 每週日 20:00 Bot 會自動發出報名卡，直接按按鈕即可。
@@ -22,10 +24,13 @@ HELP_TEXT = """📖 指令說明
 /帶人 阿豪　幫朋友報名
 /取消帶人 阿豪　取消朋友的報名
 /名單　查看目前名單
+/分組結果　查看分組結果
 /成員　列出成員與編號
 指令都在最後加上日期，就是指定加開場，例如：/名單 11/06
 
 🔧 管理員
+/分組　把正取名單隨機分組（已分組不會改變）
+/重新分組　作廢原本的結果，重新隨機分組
 /報名卡　重新發出報名卡（含所有開放的加開場）
 /加開場 11/06 20 晚上7點 中正運動中心　加開場次（人數、說明可省略，先搶先贏）
 /取消加開場 11/06　取消加開場，報名資料一併清除
@@ -53,6 +58,8 @@ class Context:
     user_id: str
     display_name: str
     now: datetime
+    # 分組用的亂數產生器；測試時可以傳入固定種子，結果就可以重現
+    rng: random.Random = field(default_factory=random.Random)
 
 
 def check_group(bound_group_id: str | None, group_id: str, text: str) -> str:
@@ -328,6 +335,44 @@ def cmd_roster(ctx: Context, member: Member, args: list[str]) -> str:
     return week if isinstance(week, str) else _roster_text(ctx, week)
 
 
+# --- 分組 ---
+
+
+def _make_teams(ctx: Context, week: Week, redo: bool) -> str:
+    existing = ctx.db.get_teams(week.game_date)
+    if existing and not redo:
+        # 分組結果不能因為多按一次就改變，要重抽必須明確使用 /重新分組
+        return "ℹ️ 已經分組過了，結果不會改變（要重新抽請用 /重新分組）\n\n" + format_teams(week, existing)
+
+    roster = roster_for(ctx.db.entries(week.game_date), week)
+    names = [e.label for e in roster.confirmed]
+    if len(names) < 2:
+        return "正取人數不足，無法分組"
+
+    teams = split_into_teams(names, ctx.rng)
+    ctx.db.save_teams(week.game_date, teams)
+    prefix = "🔁 已重新分組，原本的結果已作廢\n\n" if existing else ""
+    return prefix + format_teams(week, teams)
+
+
+def cmd_teams(ctx: Context, member: Member, args: list[str]) -> str:
+    week = _pick_week(ctx, _split_date(args)[1])
+    return week if isinstance(week, str) else _make_teams(ctx, week, redo=False)
+
+
+def cmd_reteam(ctx: Context, member: Member, args: list[str]) -> str:
+    week = _pick_week(ctx, _split_date(args)[1])
+    return week if isinstance(week, str) else _make_teams(ctx, week, redo=True)
+
+
+def cmd_team_result(ctx: Context, member: Member, args: list[str]) -> str:
+    week = _pick_week(ctx, _split_date(args)[1])
+    if isinstance(week, str):
+        return week
+    teams = ctx.db.get_teams(week.game_date)
+    return format_teams(week, teams) if teams else "還沒有分組，請管理員用 /分組"
+
+
 def _roster_text(ctx: Context, week: Week) -> str:
     roster = roster_for(ctx.db.entries(week.game_date), week)
     return format_roster(week, roster, ctx.now)
@@ -497,6 +542,9 @@ COMMANDS = {
     "/帶人": cmd_guest_add,
     "/取消帶人": cmd_guest_cancel,
     "/名單": cmd_roster,
+    "/分組": cmd_teams,
+    "/重新分組": cmd_reteam,
+    "/分組結果": cmd_team_result,
     "/成員": cmd_members,
     "/設季打": cmd_set_season,
     "/取消季打": cmd_unset_season,
@@ -512,7 +560,7 @@ COMMANDS = {
 
 ADMIN_COMMANDS = {
     "/解除綁定", "/開週", "/設季打", "/取消季打", "/重設季打", "/管理員",
-    "/報名卡", "/加開場", "/取消加開場", "/排程狀態", "/設定",
+    "/報名卡", "/加開場", "/取消加開場", "/排程狀態", "/設定", "/分組", "/重新分組",
 }
 
 # 報名卡按鈕對照表，動作名稱與 card.py 的 postback data 一致
