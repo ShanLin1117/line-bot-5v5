@@ -3,7 +3,7 @@ from datetime import datetime
 
 import pytest
 
-from app.card import Card
+from app.card import Card, PushCard
 from app.db import Database
 from app.handlers import (
     Context,
@@ -271,6 +271,40 @@ def test_card_command_returns_card_for_admin_only(ready):
 def test_card_command_without_week(db):
     say(db, "Admin", "/初始化")
     assert "沒有開放報名" in say(db, "Admin", "/報名卡")
+
+
+def test_push_card_command_returns_push_request_for_admin_only(ready):
+    assert "只有管理員" in say(ready, "Bob", "/推播報名卡")
+
+    result = say(ready, "Admin", "/推播報名卡")
+
+    assert isinstance(result, PushCard)
+    assert "10/25" in result.card.alt_text
+
+
+def test_push_card_command_without_week(db):
+    say(db, "Admin", "/初始化")
+    assert "沒有開放報名" in say(db, "Admin", "/推播報名卡")
+
+
+def test_schedule_status_requires_admin(ready):
+    assert "只有管理員" in say(ready, "Bob", "/排程狀態")
+
+
+def test_schedule_status_before_push(ready):
+    text = say(ready, "Admin", "/排程狀態")  # NOW = 10/18（日）20:00，剛進入 10/25 場次的報名期間
+
+    assert "現在時間：10/18（日）20:00" in text
+    assert "10/25，報名卡尚未推播" in text
+    assert "下次自動推播：10/25（日）20:00（場次 11/1）" in text
+
+
+def test_schedule_status_after_push(ready):
+    ready.set_setting("card_pushed_2026-10-25", at(5).isoformat())
+
+    text = say(ready, "Admin", "/排程狀態")
+
+    assert "報名卡已於 10/18（日）20:05 推播" in text
 
 
 # --- 卡片資訊設定 ---

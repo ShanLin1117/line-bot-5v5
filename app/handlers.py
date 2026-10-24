@@ -8,11 +8,11 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from urllib.parse import parse_qs
 
-from app.card import INFO_FIELDS, Card, build_card
+from app.card import INFO_FIELDS, WEEKDAYS, Card, PushCard, build_card
 from app.db import BOUND_GROUP_KEY, Database
 from app.models import Member, Week
 from app.roster import format_roster, roster_for
-from app.scheduler import default_deadline
+from app.scheduler import default_deadline, next_open, target_game_date
 
 HELP_TEXT = """📖 指令說明
 每週日 20:00 Bot 會自動發出報名卡，直接按按鈕即可。
@@ -25,14 +25,23 @@ HELP_TEXT = """📖 指令說明
 /成員　列出成員與編號
 
 🔧 管理員
-/報名卡　重新發出本場次的報名卡
-/設定 地點 威湧運動中心　設定卡片資訊（地點、時間、費用、備註）
+/報名卡　重新發出本場次的報名卡（不耗額度）
+/推播報名卡　用推播發出報名卡（耗額度，測試推播用）
+/排程狀態　查看自動推播的時間與狀態
 /開週 10/25　手動開放場次報名
 /設季打 3 7 12　依編號標記季打
 /取消季打 5　取消季打標記
 /重設季打　新季開始時清除全部季打
 /管理員 加 3　依編號新增管理員
-/解除綁定　解除群組綁定"""
+/解除綁定　解除群組綁定
+
+🖊 設定報名卡上顯示的文字（管理員）
+/設定　查看目前內容
+/設定 地點 威湧運動中心
+/設定 時間 07:00-09:00
+/設定 費用 200
+/設定 備註 第15季 4/13次
+只打項目、不打內容（例如「/設定 備註」）就是清除"""
 
 
 @dataclass
@@ -80,7 +89,7 @@ def handle_postback(ctx: Context, data: str) -> str | None:
     return handler(ctx, member, [])
 
 
-def handle_command(ctx: Context, text: str) -> str | Card | None:
+def handle_command(ctx: Context, text: str) -> str | Card | PushCard | None:
     """依指令回傳要回覆的內容；不是指令則回傳 None（不回覆）。
 
     `str | None` 是型別提示，相當於 Java 的 Optional<String>，
@@ -334,6 +343,36 @@ def cmd_card(ctx: Context, member: Member, args: list[str]) -> str | Card:
     return build_card(week, ctx.db.get_card_info())
 
 
+def cmd_push_card(ctx: Context, member: Member, args: list[str]) -> str | PushCard:
+    """手動推播報名卡，用來驗證推播路徑。不影響自動排程的「已推播」記錄。"""
+    week = _active_week(ctx)
+    if week is None:
+        return NO_WEEK
+    return PushCard(build_card(week, ctx.db.get_card_info()))
+
+
+def _fmt_moment(dt: datetime) -> str:
+    return f"{dt.month}/{dt.day}（{WEEKDAYS[dt.weekday()]}）{dt:%H:%M}"
+
+
+def cmd_schedule_status(ctx: Context, member: Member, args: list[str]) -> str:
+    """說明排程現在會做什麼，不需要等到週日就能確認排程設定是否正常。"""
+    lines = ["🕒 排程狀態", f"現在時間：{_fmt_moment(ctx.now)}"]
+
+    target = target_game_date(ctx.now)
+    if target is None:
+        lines.append("目前不在自動推播的報名期間")
+    else:
+        pushed_at = ctx.db.get_setting(f"card_pushed_{target.isoformat()}")
+        state = f"已於 {_fmt_moment(datetime.fromisoformat(pushed_at))} 推播" if pushed_at else "尚未推播（排程會在一分鐘內補發）"
+        lines.append(f"報名期間中的場次：{target.month}/{target.day}，報名卡{state}")
+
+    game_date, opens_at = next_open(ctx.now)
+    lines.append(f"下次自動推播：{_fmt_moment(opens_at)}（場次 {game_date.month}/{game_date.day}）")
+    lines.append("提醒：伺服器與 ngrok 都要保持開著，排程才會執行")
+    return "\n".join(lines)
+
+
 def cmd_info(ctx: Context, member: Member, args: list[str]) -> str:
     """設定報名卡上顯示的資訊，例如 /設定 地點 威湧運動中心。"""
     if not args:
@@ -375,12 +414,15 @@ COMMANDS = {
     "/重設季打": cmd_reset_season,
     "/管理員": cmd_admin,
     "/報名卡": cmd_card,
+    "/推播報名卡": cmd_push_card,
+    "/排程狀態": cmd_schedule_status,
     "/設定": cmd_info,
     "/說明": cmd_help,
 }
 
 ADMIN_COMMANDS = {
-    "/解除綁定", "/開週", "/設季打", "/取消季打", "/重設季打", "/管理員", "/報名卡", "/設定",
+    "/解除綁定", "/開週", "/設季打", "/取消季打", "/重設季打", "/管理員",
+    "/報名卡", "/推播報名卡", "/排程狀態", "/設定",
 }
 
 # 報名卡按鈕對照表，動作名稱與 card.py 的 postback data 一致

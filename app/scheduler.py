@@ -38,6 +38,16 @@ def target_game_date(now: datetime) -> date | None:
     return None
 
 
+def next_open(now: datetime) -> tuple[date, datetime]:
+    """下一次自動開放的（場次日期, 開放時間），開放時間一定晚於現在。"""
+    first_sunday = now.date() + timedelta(days=(6 - now.weekday()) % 7)
+    for weeks in range(3):
+        game_date = first_sunday + timedelta(days=7 * weeks)
+        if open_time(game_date) > now:
+            return game_date, open_time(game_date)
+    raise AssertionError("unreachable: 3 weeks always contain a future opening")
+
+
 async def run_once(db: Database, now: datetime, push: PushFn) -> bool:
     """檢查是否該開場次並推播報名卡；有推播回傳 True。"""
     group_id = db.get_setting(BOUND_GROUP_KEY)

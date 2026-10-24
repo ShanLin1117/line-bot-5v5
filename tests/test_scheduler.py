@@ -5,7 +5,7 @@ import pytest
 
 from app.db import BOUND_GROUP_KEY, Database
 from app.models import TZ
-from app.scheduler import run_once, target_game_date
+from app.scheduler import next_open, run_once, target_game_date
 
 
 def dt(month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
@@ -27,6 +27,19 @@ def dt(month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
 )
 def test_target_game_date(now, expected):
     assert target_game_date(now) == expected
+
+
+@pytest.mark.parametrize(
+    "now, expected_game, expected_open",
+    [
+        (dt(10, 24, 18, 0), date(2026, 11, 1), dt(10, 25, 20, 0)),  # 週六 → 明天晚上
+        (dt(10, 25, 19, 59), date(2026, 11, 1), dt(10, 25, 20, 0)),  # 開放前一分鐘
+        (dt(10, 25, 20, 0), date(2026, 11, 8), dt(11, 1, 20, 0)),  # 剛好開放，下一次是下週
+        (dt(10, 28, 9, 0), date(2026, 11, 8), dt(11, 1, 20, 0)),
+    ],
+)
+def test_next_open(now, expected_game, expected_open):
+    assert next_open(now) == (expected_game, expected_open)
 
 
 @pytest.fixture

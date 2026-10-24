@@ -21,7 +21,7 @@ from linebot.v3.webhooks import (
 )
 
 from app import line_client, scheduler
-from app.card import Card
+from app.card import Card, PushCard
 from app.config import load_settings
 from app.db import BOUND_GROUP_KEY, Database
 from app.handlers import (
@@ -128,7 +128,15 @@ async def process_event(event) -> None:
         reply = handle_postback(ctx, event.postback.data)
         logger.info("postback=%r reply=%r", event.postback.data, reply)
 
-    if isinstance(reply, Card):
+    if isinstance(reply, PushCard):
+        # 手動推播：用來驗證推播路徑，成功與否都回覆給管理員
+        try:
+            await line_client.push_card(group_id, reply.card)
+            await line_client.reply_text(event.reply_token, "✅ 已用推播發出報名卡（計入每月額度）")
+        except Exception:
+            logger.exception("manual push failed")
+            await line_client.reply_text(event.reply_token, "❌ 推播失敗，請查看伺服器的 log")
+    elif isinstance(reply, Card):
         await line_client.reply_card(event.reply_token, reply)
     elif reply is not None:
         await line_client.reply_text(event.reply_token, reply)
