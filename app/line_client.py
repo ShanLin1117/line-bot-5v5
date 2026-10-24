@@ -2,17 +2,30 @@
 
 把 SDK 集中在這裡，main.py 與測試都只面對簡單的函式，測試時可以整個替換掉。
 """
+import json
+
 from linebot.v3.messaging import (
     AsyncApiClient,
     AsyncMessagingApi,
     Configuration,
+    FlexContainer,
+    FlexMessage,
+    PushMessageRequest,
     ReplyMessageRequest,
     TextMessage,
 )
 
+from app.card import Card
 from app.config import load_settings
 
 _config = Configuration(access_token=load_settings().channel_access_token)
+
+
+def build_flex_message(card: Card) -> FlexMessage:
+    """把 Card 轉成 SDK 的 FlexMessage；SDK 會在這裡驗證 JSON 結構是否合法。"""
+    return FlexMessage(
+        alt_text=card.alt_text, contents=FlexContainer.from_json(json.dumps(card.contents))
+    )
 
 
 async def reply_text(reply_token: str, text: str) -> None:
@@ -25,6 +38,21 @@ async def reply_text(reply_token: str, text: str) -> None:
     async with AsyncApiClient(_config) as api_client:
         await AsyncMessagingApi(api_client).reply_message(
             ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=text)])
+        )
+
+
+async def reply_card(reply_token: str, card: Card) -> None:
+    async with AsyncApiClient(_config) as api_client:
+        await AsyncMessagingApi(api_client).reply_message(
+            ReplyMessageRequest(reply_token=reply_token, messages=[build_flex_message(card)])
+        )
+
+
+async def push_card(group_id: str, card: Card) -> None:
+    """主動推播卡片到群組。推播會計入每月訊息額度，只用在每週自動發卡。"""
+    async with AsyncApiClient(_config) as api_client:
+        await AsyncMessagingApi(api_client).push_message(
+            PushMessageRequest(to=group_id, messages=[build_flex_message(card)])
         )
 
 
