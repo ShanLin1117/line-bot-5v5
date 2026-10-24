@@ -63,7 +63,9 @@ async def run_once(db: Database, now: datetime, push: PushFn) -> bool:
     # 已經手動 /開週 過就沿用，不會重複建立
     db.create_week(game_date.isoformat(), default_deadline(game_date))
     week = db.get_week(game_date.isoformat())
-    await push(group_id, build_card(week, db.get_card_info()))
+    # 同一張卡也帶上目前開放中的加開場
+    extras = db.open_extras(now.date().isoformat())
+    await push(group_id, build_card(week, db.get_card_info(), extras))
     db.set_setting(pushed_key, now.isoformat())
     logger.info("pushed sign-up card for %s", game_date)
     return True

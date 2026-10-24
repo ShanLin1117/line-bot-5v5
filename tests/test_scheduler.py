@@ -74,6 +74,16 @@ def test_pushes_card_and_opens_week_on_sunday_evening(db):
     assert week.deadline == dt(10, 30, 12, 30)
 
 
+def test_pushed_card_includes_open_extra_sessions(db):
+    db.create_week("2026-11-06", dt(11, 6, 23, 59), 15, kind="extra", note="晚上7點")
+    push = FakePush()
+
+    tick(db, dt(10, 25, 20, 0), push)
+
+    text = str(push.calls[0][1].contents)
+    assert "11/1（日）籃球報名" in text and "11/6（五）加開場報名" in text
+
+
 def test_pushes_only_once_per_week(db):
     push = FakePush()
 

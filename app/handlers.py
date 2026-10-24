@@ -5,12 +5,12 @@ Java 對照：相當於 Service 層。所有函式只依賴 Database 與 Context
 """
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from urllib.parse import parse_qs
 
 from app.card import INFO_FIELDS, WEEKDAYS, Card, build_card
 from app.db import BOUND_GROUP_KEY, Database
-from app.models import Member, Week
+from app.models import TZ, Member, Week
 from app.roster import format_roster, roster_for
 from app.scheduler import default_deadline, next_open, target_game_date
 
@@ -23,11 +23,14 @@ HELP_TEXT = """📖 指令說明
 /取消帶人 阿豪　取消朋友的報名
 /名單　查看目前名單
 /成員　列出成員與編號
+指令都在最後加上日期，就是指定加開場，例如：/名單 11/06
 
 🔧 管理員
-/報名卡　重新發出本場次的報名卡
+/報名卡　重新發出報名卡（含所有開放的加開場）
+/加開場 11/06 20 晚上7點 中正運動中心　加開場次（人數、說明可省略，先搶先贏）
+/取消加開場 11/06　取消加開場，報名資料一併清除
 /排程狀態　查看自動推播的時間與狀態
-/開週 10/25　手動開放場次報名
+/開週 10/25　手動開放例行場報名
 /設季打 3 7 12　依編號標記季打
 /取消季打 5　取消季打標記
 /重設季打　新季開始時清除全部季打
@@ -81,11 +84,17 @@ def handle_postback(ctx: Context, data: str) -> str | None:
         return None
 
     member = ctx.db.upsert_member(ctx.user_id, ctx.display_name)
-    week = _active_week(ctx)
-    if week is None or week.game_date != game_date:
-        # 舊的報名卡仍然可以按，但場次已經換了，不能讓人誤報到新的場次
-        return "這張報名卡已經過期，請使用最新的報名卡，或傳 /名單 查看目前場次"
-    return handler(ctx, member, [])
+    week = ctx.db.get_week(game_date)
+    current = _active_week(ctx)
+    expired = (
+        week is None
+        or ctx.now.date() > date.fromisoformat(week.game_date)
+        # 例行場只能報「目前」這一場；舊卡仍然可以按，但場次已經換了，不能讓人誤報到新的場次
+        or (not week.is_extra and (current is None or current.game_date != week.game_date))
+    )
+    if expired:
+        return "這張報名卡已經過期，請使用最新的報名卡，或傳 /報名卡 重新發出"
+    return handler(ctx, member, week)
 
 
 def handle_command(ctx: Context, text: str) -> str | Card | None:
@@ -112,10 +121,33 @@ def handle_command(ctx: Context, text: str) -> str | Card | None:
 # --- 共用輔助 ---
 
 
+NO_WEEK = "目前沒有開放報名的場次，請管理員用 /開週 日期 開啟"
+_DATE_TOKEN = re.compile(r"(?:\d{4}[-/])?\d{1,2}[-/]\d{1,2}")
+
+
 def _active_week(ctx: Context) -> Week | None:
+    """目前的例行場；已經過了比賽日就視為沒有。"""
     week = ctx.db.current_week()
     if week is None or ctx.now.date() > date.fromisoformat(week.game_date):
         return None
+    return week
+
+
+def _split_date(args: list[str]) -> tuple[list[str], str | None]:
+    """指令最後一個參數若是日期，就拆出來，用來指定加開場。"""
+    if args and _DATE_TOKEN.fullmatch(args[-1]):
+        return args[:-1], args[-1]
+    return args, None
+
+
+def _pick_week(ctx: Context, raw_date: str | None) -> Week | str:
+    """沒指定日期用目前的例行場；指定日期則找該日的場次。失敗時回傳錯誤訊息。"""
+    if raw_date is None:
+        return _active_week(ctx) or NO_WEEK
+    game_date = _parse_game_date(raw_date, ctx.now.date())
+    week = ctx.db.get_week(game_date.isoformat()) if game_date else None
+    if week is None or ctx.now.date() > date.fromisoformat(week.game_date):
+        return f"找不到 {raw_date} 的場次"
     return week
 
 
@@ -185,15 +217,49 @@ def cmd_open_week(ctx: Context, member: Member, args: list[str]) -> str:
     )
 
 
+def cmd_open_extra(ctx: Context, member: Member, args: list[str]) -> str | Card:
+    """加開場：不分季打零打，依報名順序先搶先贏。例如 /加開場 11/06 20 晚上7點 中正運動中心"""
+    usage = "用法：/加開場 11/06 [人數] [說明]\n例如：/加開場 11/06 20 晚上7點 中正運動中心"
+    if not args:
+        return usage
+    game_date = _parse_game_date(args[0], ctx.now.date())
+    if game_date is None:
+        return "日期格式不正確\n" + usage
+    if game_date < ctx.now.date():
+        return "這個日期已經過了"
+
+    rest, capacity = args[1:], 20
+    if rest and rest[0].isdigit():
+        capacity, rest = int(rest[0]), rest[1:]
+        if not 1 <= capacity <= 60:
+            return "人數請輸入 1 到 60"
+
+    # 加開場沒有「截止」的概念，截止時間只是填給資料表用，設在比賽日當天結束
+    deadline = datetime.combine(game_date, time(23, 59), tzinfo=TZ)
+    created = ctx.db.create_week(
+        game_date.isoformat(), deadline, capacity, kind="extra", note=" ".join(rest)
+    )
+    if not created:
+        return f"{game_date.month}/{game_date.day} 已經有場次了（同一天只能有一個場次）"
+    return _combined_card(ctx)
+
+
+def cmd_cancel_extra(ctx: Context, member: Member, args: list[str]) -> str:
+    if len(args) != 1:
+        return "用法：/取消加開場 11/06"
+    game_date = _parse_game_date(args[0], ctx.now.date())
+    week = ctx.db.get_week(game_date.isoformat()) if game_date else None
+    if week is None or not week.is_extra:
+        return f"找不到 {args[0]} 的加開場"
+    removed = ctx.db.delete_week(week.game_date)
+    suffix = f"（已清除 {removed} 筆報名）" if removed else ""
+    return f"✅ 已取消 {game_date.month}/{game_date.day} 加開場{suffix}"
+
+
 # --- 報名與取消 ---
 
-NO_WEEK = "目前沒有開放報名的場次，請管理員用 /開週 日期 開啟"
 
-
-def _register(ctx: Context, member: Member, guest_name: str | None) -> str:
-    week = _active_week(ctx)
-    if week is None:
-        return NO_WEEK
+def _register(ctx: Context, member: Member, week: Week, guest_name: str | None) -> str:
     who = guest_name or member.display_name
     if ctx.db.find_active(week.game_date, member.id, guest_name) is not None:
         return f"{who} 已經報名過了"
@@ -204,16 +270,14 @@ def _register(ctx: Context, member: Member, guest_name: str | None) -> str:
 
     entry = next((e for e in roster.confirmed if e.id == reg_id), None)
     if entry is not None:
-        kind = "季打" if entry.is_season else "零打"
-        return f"✅ {who} 報名成功（{kind}）｜{total}"
+        # 加開場不分季打零打，所以不標示身分
+        kind = "" if week.is_extra else ("（季打）" if entry.is_season else "（零打）")
+        return f"✅ {who} 報名成功{kind}｜{total}"
     position = next(i for i, e in enumerate(roster.waitlist, start=1) if e.id == reg_id)
     return f"⏳ {who} 排候補第 {position} 位｜{total}"
 
 
-def _cancel(ctx: Context, member: Member, guest_name: str | None) -> str:
-    week = _active_week(ctx)
-    if week is None:
-        return NO_WEEK
+def _cancel(ctx: Context, member: Member, week: Week, guest_name: str | None) -> str:
     who = guest_name or member.display_name
     reg_id = ctx.db.find_active(week.game_date, member.id, guest_name)
     if reg_id is None:
@@ -234,43 +298,71 @@ def _cancel(ctx: Context, member: Member, guest_name: str | None) -> str:
 
 
 def cmd_register(ctx: Context, member: Member, args: list[str]) -> str:
-    return _register(ctx, member, None)
+    week = _pick_week(ctx, _split_date(args)[1])
+    return week if isinstance(week, str) else _register(ctx, member, week, None)
 
 
 def cmd_cancel(ctx: Context, member: Member, args: list[str]) -> str:
-    return _cancel(ctx, member, None)
+    week = _pick_week(ctx, _split_date(args)[1])
+    return week if isinstance(week, str) else _cancel(ctx, member, week, None)
 
 
 def cmd_guest_add(ctx: Context, member: Member, args: list[str]) -> str:
-    if not args:
-        return "用法：/帶人 阿豪"
-    return _register(ctx, member, " ".join(args))
+    name_parts, raw_date = _split_date(args)
+    if not name_parts:
+        return "用法：/帶人 阿豪（加開場在最後加日期，例如 /帶人 阿豪 11/06）"
+    week = _pick_week(ctx, raw_date)
+    return week if isinstance(week, str) else _register(ctx, member, week, " ".join(name_parts))
 
 
 def cmd_guest_cancel(ctx: Context, member: Member, args: list[str]) -> str:
-    if not args:
-        return "用法：/取消帶人 阿豪"
-    return _cancel(ctx, member, " ".join(args))
-
-
-def cmd_guest_auto(ctx: Context, member: Member, args: list[str]) -> str:
-    """「帶朋友 +1」按鈕：自動命名為「名稱友1」「名稱友2」…，不用打字。"""
-    week = _active_week(ctx)
-    if week is None:
-        return NO_WEEK
-    n = 1
-    while ctx.db.find_active(week.game_date, member.id, f"{member.display_name}友{n}") is not None:
-        n += 1
-    reply = _register(ctx, member, f"{member.display_name}友{n}")
-    return reply + "\n要改名字請先 /取消帶人 再用 /帶人 名字"
+    name_parts, raw_date = _split_date(args)
+    if not name_parts:
+        return "用法：/取消帶人 阿豪（加開場在最後加日期，例如 /取消帶人 阿豪 11/06）"
+    week = _pick_week(ctx, raw_date)
+    return week if isinstance(week, str) else _cancel(ctx, member, week, " ".join(name_parts))
 
 
 def cmd_roster(ctx: Context, member: Member, args: list[str]) -> str:
-    week = _active_week(ctx)
-    if week is None:
-        return NO_WEEK
+    week = _pick_week(ctx, _split_date(args)[1])
+    return week if isinstance(week, str) else _roster_text(ctx, week)
+
+
+def _roster_text(ctx: Context, week: Week) -> str:
     roster = roster_for(ctx.db.entries(week.game_date), week)
     return format_roster(week, roster, ctx.now)
+
+
+# 報名卡按鈕的處理：與指令共用 _register / _cancel，差別只在場次由按鈕提供
+
+
+def _button_register(ctx: Context, member: Member, week: Week) -> str:
+    return _register(ctx, member, week, None)
+
+
+def _button_cancel(ctx: Context, member: Member, week: Week) -> str:
+    return _cancel(ctx, member, week, None)
+
+
+def _button_guest(ctx: Context, member: Member, week: Week) -> str:
+    """「帶朋友 +1」按鈕：自動命名為「名稱友1」「名稱友2」…，不用打字。"""
+    n = 1
+    while ctx.db.find_active(week.game_date, member.id, f"{member.display_name}友{n}") is not None:
+        n += 1
+    name = f"{member.display_name}友{n}"
+    reply = _register(ctx, member, week, name)
+    # 加開場的指令要多帶日期，才知道是哪一場
+    on = f" {_short_date(week)}" if week.is_extra else ""
+    return reply + f"\n要改名字：/取消帶人 {name}{on}，再 /帶人 新名字{on}"
+
+
+def _button_roster(ctx: Context, member: Member, week: Week) -> str:
+    return _roster_text(ctx, week)
+
+
+def _short_date(week: Week) -> str:
+    game = date.fromisoformat(week.game_date)
+    return f"{game.month}/{game.day}"
 
 
 # --- 成員管理 ---
@@ -335,11 +427,17 @@ def cmd_admin(ctx: Context, member: Member, args: list[str]) -> str:
     return f"✅ {target.display_name} 已成為管理員"
 
 
-def cmd_card(ctx: Context, member: Member, args: list[str]) -> str | Card:
-    week = _active_week(ctx)
-    if week is None:
+def _combined_card(ctx: Context) -> str | Card:
+    """合併報名卡：目前的例行場，加上所有尚未過期的加開場。"""
+    regular = _active_week(ctx)
+    extras = ctx.db.open_extras(ctx.now.date().isoformat())
+    if regular is None and not extras:
         return NO_WEEK
-    return build_card(week, ctx.db.get_card_info())
+    return build_card(regular, ctx.db.get_card_info(), extras)
+
+
+def cmd_card(ctx: Context, member: Member, args: list[str]) -> str | Card:
+    return _combined_card(ctx)
 
 
 def _fmt_moment(dt: datetime) -> str:
@@ -405,6 +503,8 @@ COMMANDS = {
     "/重設季打": cmd_reset_season,
     "/管理員": cmd_admin,
     "/報名卡": cmd_card,
+    "/加開場": cmd_open_extra,
+    "/取消加開場": cmd_cancel_extra,
     "/排程狀態": cmd_schedule_status,
     "/設定": cmd_info,
     "/說明": cmd_help,
@@ -412,13 +512,13 @@ COMMANDS = {
 
 ADMIN_COMMANDS = {
     "/解除綁定", "/開週", "/設季打", "/取消季打", "/重設季打", "/管理員",
-    "/報名卡", "/排程狀態", "/設定",
+    "/報名卡", "/加開場", "/取消加開場", "/排程狀態", "/設定",
 }
 
 # 報名卡按鈕對照表，動作名稱與 card.py 的 postback data 一致
 POSTBACK_ACTIONS = {
-    "register": cmd_register,
-    "cancel": cmd_cancel,
-    "guest": cmd_guest_auto,
-    "roster": cmd_roster,
+    "register": _button_register,
+    "cancel": _button_cancel,
+    "guest": _button_guest,
+    "roster": _button_roster,
 }

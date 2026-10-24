@@ -293,6 +293,185 @@ def test_schedule_status_after_push(ready):
     assert "報名卡已於 10/18（日）20:05 推播" in text
 
 
+# --- 加開場 ---
+
+
+def open_extra(db, text: str = "/加開場 11/06 15 晚上7點 中正運動中心"):
+    return say(db, "Admin", text)
+
+
+def test_open_extra_requires_admin(ready):
+    assert "只有管理員" in say(ready, "Bob", "/加開場 11/06")
+
+
+def test_open_extra_replies_with_combined_card(ready):
+    card = open_extra(ready)
+
+    assert isinstance(card, Card)
+    text = str(card.contents)
+    assert "11/6（五）加開場報名" in text and "晚上7點 中正運動中心" in text
+    assert "名額 15 人" in text
+    assert "10/25（日）籃球報名" in text  # 例行場仍在卡片上方
+    assert card.alt_text == "🏀 10/25（日）籃球報名（另有 1 個場次）"
+
+
+def test_open_extra_defaults_to_20_without_note(ready):
+    text = str(open_extra(ready, "/加開場 11/06").contents)
+
+    assert "名額 20 人" in text
+
+
+def test_open_extra_validation(ready):
+    assert "用法" in say(ready, "Admin", "/加開場")
+    assert "日期格式不正確" in say(ready, "Admin", "/加開場 abc")
+    assert "已經過了" in say(ready, "Admin", "/加開場 2026/10/01")
+    assert "人數請輸入" in say(ready, "Admin", "/加開場 11/06 0")
+    assert "人數請輸入" in say(ready, "Admin", "/加開場 11/06 99")
+    assert "已經有場次" in say(ready, "Admin", "/加開場 10/25")  # 與例行場同一天
+
+    open_extra(ready)
+    assert "已經有場次" in open_extra(ready)
+
+
+def test_extra_does_not_replace_the_current_regular_week(ready):
+    open_extra(ready)  # 11/06 比例行場 10/25 晚，但它不是例行場
+
+    assert ready.current_week().game_date == "2026-10-25"
+    assert "報名成功（零打）" in say(ready, "Bob", "/報名", at(1))
+    assert say(ready, "Bob", "/名單", at(2)).startswith("10/25 🏀正取名單")
+
+
+def test_extra_is_first_come_regardless_of_season(ready):
+    open_extra(ready, "/加開場 11/06 1")
+    say(ready, "Bob", "/報名", at(1))  # 先讓 Bob 成為成員，編號 2
+    say(ready, "Admin", "/設季打 2")
+
+    first = press(ready, "Cat", "register", week="2026-11-06", now=at(2))
+    second = press(ready, "Bob", "register", week="2026-11-06", now=at(3))
+
+    assert first == "✅ Cat 報名成功｜正取 1/1"  # 加開場不標示季打、零打
+    assert "排候補第 1 位" in second  # Bob 是季打，但加開場不給保障名額
+
+
+def test_extra_cancel_promotes_in_order(ready):
+    open_extra(ready, "/加開場 11/06 1")
+    press(ready, "Cat", "register", week="2026-11-06", now=at(1))
+    press(ready, "Dan", "register", week="2026-11-06", now=at(2))
+
+    reply = press(ready, "Cat", "cancel", week="2026-11-06", now=at(3))
+
+    assert "候補遞補：Dan" in reply
+
+
+def test_commands_accept_a_date_to_target_the_extra(ready):
+    open_extra(ready)
+
+    assert "Bob 報名成功｜正取 1/15" in say(ready, "Bob", "/報名 11/06", at(1))
+    assert "加開場正取名單1位" in say(ready, "Bob", "/名單 11/06", at(2))
+    assert "阿豪 報名成功" in say(ready, "Bob", "/帶人 阿豪 11/06", at(3))
+    assert "阿豪 已取消" in say(ready, "Bob", "/取消帶人 阿豪 11/06", at(4))
+    assert "Bob 已取消" in say(ready, "Bob", "/取消 11/06", at(5))
+    # 沒帶日期的指令仍然是例行場，這時例行場沒有人報名
+    assert "（目前還沒有人報名）" in say(ready, "Bob", "/名單", at(6))
+
+
+def test_unknown_date_is_reported(ready):
+    assert "找不到 12/25 的場次" in say(ready, "Bob", "/名單 12/25")
+    assert "找不到 12/25 的場次" in say(ready, "Bob", "/報名 12/25")
+
+
+def test_extra_roster_format(ready):
+    open_extra(ready)
+    say(ready, "Bob", "/報名 11/06", at(1))
+
+    text = say(ready, "Bob", "/名單 11/06", at(2))
+
+    assert text.split("\n")[0] == "11/6 🏀加開場正取名單1位"
+    assert "晚上7點 中正運動中心" in text
+    assert "📍正取1位" in text and "1.Bob" in text
+    assert "季打" not in text and "零打" not in text
+    assert text.endswith("名額 1/15｜加開場，依報名順序（先搶先贏）")
+
+
+def test_extra_guest_button_hint_includes_date(ready):
+    open_extra(ready)
+
+    reply = press(ready, "Bob", "guest", week="2026-11-06", now=at(1))
+
+    assert "Bob友1 報名成功｜正取 1/15" in reply
+    assert "/取消帶人 Bob友1 11/6" in reply
+
+
+def test_card_command_lists_regular_and_all_open_extras(ready):
+    open_extra(ready)
+    open_extra(ready, "/加開場 11/13")
+
+    card = say(ready, "Admin", "/報名卡")
+
+    text = str(card.contents)
+    assert text.index("10/25（日）籃球報名") < text.index("11/6（五）加開場報名")
+    assert text.index("11/6（五）加開場報名") < text.index("11/13（五）加開場報名")
+    assert card.alt_text.endswith("（另有 2 個場次）")
+
+
+def test_card_command_drops_expired_sessions(ready):
+    open_extra(ready)
+    open_extra(ready, "/加開場 11/13")
+    after_first_extra = datetime(2026, 11, 7, 10, 0, tzinfo=TZ)  # 例行場與 11/6 都過了
+
+    card = say(ready, "Admin", "/報名卡", now=after_first_extra)
+
+    text = str(card.contents)
+    assert "11/13（五）加開場報名" in text
+    assert "11/6" not in text and "10/25" not in text
+
+
+def test_old_regular_card_is_expired_but_extra_card_still_works(ready):
+    open_extra(ready)
+    say(ready, "Admin", "/開週 11/01")  # 例行場換成 11/01
+
+    assert "已經過期" in press(ready, "Bob", "register", week="2026-10-25", now=at(1))
+    assert "報名成功" in press(ready, "Bob", "register", week="2026-11-06", now=at(2))
+
+
+def test_extra_card_expires_after_the_game_day(ready):
+    open_extra(ready)
+    later = datetime(2026, 11, 7, 9, 0, tzinfo=TZ)
+
+    assert "已經過期" in press(ready, "Bob", "register", week="2026-11-06", now=later)
+
+
+def test_cancel_extra_requires_admin(ready):
+    open_extra(ready)
+    assert "只有管理員" in say(ready, "Bob", "/取消加開場 11/06")
+
+
+def test_cancel_extra_removes_session_and_registrations(ready):
+    open_extra(ready)
+    say(ready, "Bob", "/報名 11/06", at(1))
+    say(ready, "Cat", "/報名 11/06", at(2))
+
+    reply = say(ready, "Admin", "/取消加開場 11/06")
+
+    assert reply == "✅ 已取消 11/6 加開場（已清除 2 筆報名）"
+    assert "找不到 11/06 的場次" in say(ready, "Bob", "/名單 11/06", at(3))
+    assert "11/6" not in str(say(ready, "Admin", "/報名卡").contents)
+    assert isinstance(say(ready, "Admin", "/加開場 11/06"), Card)  # 日期可以重新使用
+
+
+def test_cancel_extra_without_registrations_and_validation(ready):
+    open_extra(ready)
+
+    assert say(ready, "Admin", "/取消加開場 11/06") == "✅ 已取消 11/6 加開場"
+    assert "用法" in say(ready, "Admin", "/取消加開場")
+    assert "找不到 11/20 的加開場" in say(ready, "Admin", "/取消加開場 11/20")
+
+
+def test_cancel_extra_refuses_the_regular_week(ready):
+    assert "找不到 10/25 的加開場" in say(ready, "Admin", "/取消加開場 10/25")
+    assert ready.current_week().game_date == "2026-10-25"
+
+
 # --- 卡片資訊設定 ---
 
 

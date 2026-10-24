@@ -187,6 +187,22 @@ def test_card_command_replies_with_flex_card(line):
     assert "籃球報名" in card.alt_text
 
 
+def test_open_extra_via_webhook_replies_with_combined_card_and_buttons_work(line):
+    regular_date = open_week_in_two_weeks()
+    extra_date = (datetime.now(TZ) + timedelta(days=16)).date().isoformat()
+
+    post([message_event("G1", "U1", f"/加開場 {extra_date} 20 晚上7點")])
+
+    assert len(line["cards"]) == 1
+    text = str(line["cards"][0][1].contents)
+    assert "加開場報名" in text and "晚上7點" in text
+    assert f"a=register&w={extra_date}" in text and f"a=register&w={regular_date}" in text
+
+    line["replies"].clear()
+    post([postback_event("G1", "U2", f"a=register&w={extra_date}")])
+    assert "Shan 報名成功｜正取 1/20" in line["replies"][0][1]
+
+
 def test_button_press_registers_and_replies(line):
     game_date = open_week_in_two_weeks()
     line["replies"].clear()
