@@ -4,31 +4,47 @@ LINE 群組球賽分組機器人：自動推播每週報名卡、截止報名，
 
 ## 功能（規劃中）
 
-- [x] 專案骨架：FastAPI + LINE Webhook 簽章驗證
-- [ ] 回覆訊息（Messaging API）
-- [ ] 球員資料設定（`/設定`）
-- [ ] 每週報名卡（Flex Message）
-- [ ] 排程：週日 20:00 推播、週二 24:00 截止
-- [ ] 分組演算法與 `/分組` 預覽
-- [ ] 帶人、暫停本週等管理指令
+- [x] 專案骨架：FastAPI + LINE Webhook 簽章驗證與回覆訊息
+- [x] 群組綁定：只服務一個群組，其他群組自動退出
+- [x] 報名規則：季打保障名額、零打依序、候補自動遞補、帶朋友（見 [docs/rules.md](docs/rules.md)）
+- [x] 管理指令：開場次、標記季打、管理員
+- [ ] 報名卡片（按鈕）與週日 20:00 自動推播
+- [ ] `/分組` 隨機分 4 隊
+- [ ] 戰力平衡、管理員代取消
 
 ## 技術棧
 
 - Python 3.13
 - FastAPI + Uvicorn
 - line-bot-sdk（v3）
+- SQLite（標準函式庫 `sqlite3`）
 - pytest
 
 ## 專案結構
 
 ```
 app/
-├── main.py       # 程式入口，/health 與 /callback
-├── config.py     # 讀取 .env 設定
-└── handlers.py   # 指令處理（純函式，易於測試）
-tests/            # 測試
-tmp/              # 暫存檔（不進版控）
+├── main.py         # 程式入口，/health 與 /callback，事件分派與群組檢查
+├── config.py       # 讀取 .env 設定
+├── models.py       # 資料模型（Member、Week、Entry）
+├── db.py           # SQLite 存取層
+├── roster.py       # 名單計算與格式化（純函式，核心規則）
+├── handlers.py     # 指令處理（依賴資料庫，不依賴 LINE）
+└── line_client.py  # LINE Messaging API 呼叫（回覆、查名稱、退出群組）
+docs/rules.md       # 報名規則規格
+tests/              # 測試
+data/               # SQLite 資料庫檔案（不進版控）
+tmp/                # 暫存檔（不進版控）
 ```
+
+## 使用方式
+
+1. 把 Bot 拉進群組，由**隊長**先傳 `/初始化`，群組即被綁定，隊長成為管理員。
+2. 管理員傳 `/開週 10/25` 開放場次（截止時間預設為前兩天的 12:30）。
+3. 大家傳 `/報名` 報名；管理員用 `/成員` 查編號，再用 `/設季打 3 7 12` 標記季打。
+4. 傳 `/名單` 查看正取與候補。傳 `/說明` 看完整指令。
+
+完整規則請看 [docs/rules.md](docs/rules.md)。
 
 ## 快速開始
 
