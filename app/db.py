@@ -31,6 +31,13 @@ CREATE TABLE IF NOT EXISTS weeks (
     kind      TEXT NOT NULL DEFAULT 'regular',
     note      TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS teams (
+    game_date TEXT NOT NULL,
+    team_no   INTEGER NOT NULL,  -- 0 起算，0 = A 隊
+    seq       INTEGER NOT NULL,  -- 隊內順序
+    label     TEXT NOT NULL,     -- 分組當下的名稱快照，之後有人取消也不會改變
+    PRIMARY KEY (game_date, team_no, seq)
+);
 CREATE TABLE IF NOT EXISTS registrations (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     game_date     TEXT NOT NULL REFERENCES weeks(game_date),
@@ -194,8 +201,36 @@ class Database:
                 (game_date,),
             ).fetchone()["n"]
             self.conn.execute("DELETE FROM registrations WHERE game_date = ?", (game_date,))
+            self.conn.execute("DELETE FROM teams WHERE game_date = ?", (game_date,))
             self.conn.execute("DELETE FROM weeks WHERE game_date = ?", (game_date,))
         return active
+
+    # --- 分組 ---
+
+    def save_teams(self, game_date: str, teams: list[list[str]]) -> None:
+        """儲存分組結果；該場次已有結果時整組取代。"""
+        with self.conn:
+            self.conn.execute("DELETE FROM teams WHERE game_date = ?", (game_date,))
+            self.conn.executemany(
+                "INSERT INTO teams(game_date, team_no, seq, label) VALUES (?, ?, ?, ?)",
+                [
+                    (game_date, team_no, seq, label)
+                    for team_no, team in enumerate(teams)
+                    for seq, label in enumerate(team)
+                ],
+            )
+
+    def get_teams(self, game_date: str) -> list[list[str]] | None:
+        rows = self.conn.execute(
+            "SELECT team_no, label FROM teams WHERE game_date = ? ORDER BY team_no, seq",
+            (game_date,),
+        ).fetchall()
+        if not rows:
+            return None
+        teams: list[list[str]] = [[] for _ in range(rows[-1]["team_no"] + 1)]
+        for row in rows:
+            teams[row["team_no"]].append(row["label"])
+        return teams
 
     def get_week(self, game_date: str) -> Week | None:
         row = self.conn.execute("SELECT * FROM weeks WHERE game_date = ?", (game_date,)).fetchone()
