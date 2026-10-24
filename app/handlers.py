@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from urllib.parse import parse_qs
 
-from app.card import INFO_FIELDS, WEEKDAYS, Card, PushCard, build_card
+from app.card import INFO_FIELDS, WEEKDAYS, Card, build_card
 from app.db import BOUND_GROUP_KEY, Database
 from app.models import Member, Week
 from app.roster import format_roster, roster_for
@@ -25,8 +25,7 @@ HELP_TEXT = """📖 指令說明
 /成員　列出成員與編號
 
 🔧 管理員
-/報名卡　重新發出本場次的報名卡（不耗額度）
-/推播報名卡　用推播發出報名卡（耗額度，測試推播用）
+/報名卡　重新發出本場次的報名卡
 /排程狀態　查看自動推播的時間與狀態
 /開週 10/25　手動開放場次報名
 /設季打 3 7 12　依編號標記季打
@@ -89,7 +88,7 @@ def handle_postback(ctx: Context, data: str) -> str | None:
     return handler(ctx, member, [])
 
 
-def handle_command(ctx: Context, text: str) -> str | Card | PushCard | None:
+def handle_command(ctx: Context, text: str) -> str | Card | None:
     """依指令回傳要回覆的內容；不是指令則回傳 None（不回覆）。
 
     `str | None` 是型別提示，相當於 Java 的 Optional<String>，
@@ -343,14 +342,6 @@ def cmd_card(ctx: Context, member: Member, args: list[str]) -> str | Card:
     return build_card(week, ctx.db.get_card_info())
 
 
-def cmd_push_card(ctx: Context, member: Member, args: list[str]) -> str | PushCard:
-    """手動推播報名卡，用來驗證推播路徑。不影響自動排程的「已推播」記錄。"""
-    week = _active_week(ctx)
-    if week is None:
-        return NO_WEEK
-    return PushCard(build_card(week, ctx.db.get_card_info()))
-
-
 def _fmt_moment(dt: datetime) -> str:
     return f"{dt.month}/{dt.day}（{WEEKDAYS[dt.weekday()]}）{dt:%H:%M}"
 
@@ -414,7 +405,6 @@ COMMANDS = {
     "/重設季打": cmd_reset_season,
     "/管理員": cmd_admin,
     "/報名卡": cmd_card,
-    "/推播報名卡": cmd_push_card,
     "/排程狀態": cmd_schedule_status,
     "/設定": cmd_info,
     "/說明": cmd_help,
@@ -422,7 +412,7 @@ COMMANDS = {
 
 ADMIN_COMMANDS = {
     "/解除綁定", "/開週", "/設季打", "/取消季打", "/重設季打", "/管理員",
-    "/報名卡", "/推播報名卡", "/排程狀態", "/設定",
+    "/報名卡", "/排程狀態", "/設定",
 }
 
 # 報名卡按鈕對照表，動作名稱與 card.py 的 postback data 一致

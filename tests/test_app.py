@@ -82,12 +82,7 @@ def line(monkeypatch):
     monkeypatch 相當於 Mockito 的 mock/when：測試結束後會自動還原。
     """
     monkeypatch.setattr("app.main.db", Database(":memory:"))
-    calls = {"replies": [], "left": [], "cards": [], "pushes": [], "push_fails": False}
-
-    async def fake_push_card(group_id, card):
-        if calls["push_fails"]:
-            raise RuntimeError("LINE API down")
-        calls["pushes"].append((group_id, card))
+    calls = {"replies": [], "left": [], "cards": []}
 
     async def fake_reply(reply_token, text):
         calls["replies"].append((reply_token, text))
@@ -103,7 +98,6 @@ def line(monkeypatch):
 
     monkeypatch.setattr(line_client, "reply_text", fake_reply)
     monkeypatch.setattr(line_client, "reply_card", fake_reply_card)
-    monkeypatch.setattr(line_client, "push_card", fake_push_card)
     monkeypatch.setattr(line_client, "leave_group", fake_leave)
     monkeypatch.setattr(line_client, "get_display_name", fake_name)
     return calls
@@ -191,30 +185,6 @@ def test_card_command_replies_with_flex_card(line):
     token, card = line["cards"][0]
     assert token == "token-1"
     assert "籃球報名" in card.alt_text
-
-
-def test_push_card_command_pushes_to_bound_group_and_confirms(line):
-    open_week_in_two_weeks()
-    line["replies"].clear()
-
-    post([message_event("G1", "U1", "/推播報名卡")])
-
-    assert len(line["pushes"]) == 1
-    group_id, card = line["pushes"][0]
-    assert group_id == "G1"
-    assert "籃球報名" in card.alt_text
-    assert "已用推播發出報名卡" in line["replies"][0][1]
-
-
-def test_push_card_failure_is_reported_to_admin(line):
-    open_week_in_two_weeks()
-    line["replies"].clear()
-    line["push_fails"] = True
-
-    assert post([message_event("G1", "U1", "/推播報名卡")]).status_code == 200
-
-    assert line["pushes"] == []
-    assert "推播失敗" in line["replies"][0][1]
 
 
 def test_button_press_registers_and_replies(line):

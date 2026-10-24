@@ -20,13 +20,6 @@ class Card:
     contents: dict  # Flex Message 的 JSON 結構
 
 
-@dataclass(frozen=True)
-class PushCard:
-    """要求「用推播送出」的卡片（一般回覆用 Card，推播會計入每月額度）。"""
-
-    card: Card
-
-
 def _text(text: str, **options) -> dict:
     return {"type": "text", "text": text, "wrap": True, **options}
 

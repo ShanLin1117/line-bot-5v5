@@ -3,7 +3,7 @@ from datetime import datetime
 
 import pytest
 
-from app.card import Card, PushCard
+from app.card import Card
 from app.db import Database
 from app.handlers import (
     Context,
@@ -271,20 +271,6 @@ def test_card_command_returns_card_for_admin_only(ready):
 def test_card_command_without_week(db):
     say(db, "Admin", "/初始化")
     assert "沒有開放報名" in say(db, "Admin", "/報名卡")
-
-
-def test_push_card_command_returns_push_request_for_admin_only(ready):
-    assert "只有管理員" in say(ready, "Bob", "/推播報名卡")
-
-    result = say(ready, "Admin", "/推播報名卡")
-
-    assert isinstance(result, PushCard)
-    assert "10/25" in result.card.alt_text
-
-
-def test_push_card_command_without_week(db):
-    say(db, "Admin", "/初始化")
-    assert "沒有開放報名" in say(db, "Admin", "/推播報名卡")
 
 
 def test_schedule_status_requires_admin(ready):
