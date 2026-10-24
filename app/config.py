@@ -18,10 +18,12 @@ load_dotenv()
 class Settings:
     channel_secret: str
     channel_access_token: str
+    db_path: str
 
 
 def load_settings() -> Settings:
     return Settings(
         channel_secret=os.getenv("LINE_CHANNEL_SECRET", ""),
         channel_access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN", ""),
+        db_path=os.getenv("DB_PATH", "data/line-bot.db"),
     )
