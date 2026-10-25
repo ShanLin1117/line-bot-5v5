@@ -60,7 +60,7 @@ tmp/                # 暫存檔（不進版控）
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # 含測試工具；正式環境只需要 requirements.txt
 Copy-Item .env.example .env   # 再填入 LINE 頻道的金鑰
 ```
 
@@ -77,6 +77,51 @@ uvicorn app.main:app --reload
 
 ```powershell
 pytest -v
+```
+
+## 部署（Fly.io）
+
+Bot 需要一直開著（週日 20:00 排程開場次）、需要保存 SQLite 資料庫、且只能跑**一台**，所以要用有持久化磁碟、不會休眠的平台。以下為 Windows PowerShell 指令。
+
+```powershell
+winget install Fly-io.flyctl             # 安裝後重開 PowerShell
+flyctl auth login                         # 開瀏覽器登入
+flyctl config validate                    # 驗證 fly.toml
+
+# 1. 建立 app（名稱要全站唯一；若不是 line-bot-5v5-shanlin，請同步修改 fly.toml 的 app）
+flyctl apps create line-bot-5v5-shanlin
+
+# 2. 建立持久化磁碟（放資料庫），區域要與 fly.toml 的 primary_region 相同
+flyctl volumes create data --size 1 --region nrt
+
+# 3. 設定金鑰（請自己在終端機輸入，不要貼到任何對話或檔案）
+flyctl secrets set LINE_CHANNEL_SECRET=... LINE_CHANNEL_ACCESS_TOKEN=...
+
+# 4. 部署，--ha=false 確保只有一台機器（不然排程與 SQLite 都會出問題）
+flyctl deploy --ha=false
+```
+
+部署完成後：
+
+1. 到 LINE Developers Console 的 Messaging API，把 Webhook URL 改成 `https://<app 名稱>.fly.dev/callback` 並按 Verify。
+2. 關掉本機的 `uvicorn` 與 `ngrok`，否則會有兩份 Bot。
+3. 在群組由隊長傳 `/初始化`，再 `/設季打`、`/設定` 等。**雲端資料庫是全新的**，本機測試資料不會帶過去。
+
+常用指令：
+
+```powershell
+flyctl logs                # 看即時 log
+flyctl status              # 看機器狀態
+flyctl ssh console         # 進入機器（資料庫在 /data/line-bot.db）
+flyctl volumes snapshots list data   # 查看磁碟快照（備份）
+```
+
+本機驗證映像（需先啟動 Docker Desktop）：
+
+```powershell
+docker build -t line-bot-5v5 .
+docker run --rm -p 127.0.0.1:8081:8000 -e LINE_CHANNEL_SECRET=dummy -e LINE_CHANNEL_ACCESS_TOKEN=dummy line-bot-5v5
+# 另一個視窗：Invoke-WebRequest http://127.0.0.1:8081/health
 ```
 
 ## 環境變數
