@@ -1,21 +1,20 @@
-"""每週自動開場次並推播報名卡。
+"""每週自動開場次。
 
 Java 對照：相當於 @Scheduled。這裡只有一個固定排程，所以用 asyncio 的背景迴圈就夠了，
-不額外引入排程套件。每分鐘檢查一次，並以資料庫記錄「這場次推播過沒有」，
-所以伺服器重啟或晚一點才開機，也不會漏發或重發。
+不額外引入排程套件。每分鐘檢查一次；場次已經存在就什麼都不做，所以重複檢查、
+伺服器重啟或晚一點才開機（會補開）都不會出問題。
+
+排程「只開場次，不發訊息」：群組有 160 人，主動推播會按人數計入每月額度，
+免費額度撐不住，所以報名卡改由管理員傳 /報名卡（回覆，免費）發出。
 """
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
 from datetime import date, datetime, time, timedelta
 
-from app.card import Card, build_card
 from app.db import BOUND_GROUP_KEY, Database
 from app.models import TZ
 
 logger = logging.getLogger("line-bot-5v5")
-
-PushFn = Callable[[str, Card], Awaitable[None]]
 
 
 def default_deadline(game_date: date) -> datetime:
@@ -48,33 +47,24 @@ def next_open(now: datetime) -> tuple[date, datetime]:
     raise AssertionError("unreachable: 3 weeks always contain a future opening")
 
 
-async def run_once(db: Database, now: datetime, push: PushFn) -> bool:
-    """檢查是否該開場次並推播報名卡；有推播回傳 True。"""
-    group_id = db.get_setting(BOUND_GROUP_KEY)
-    if group_id is None:
-        return False
+def open_due_week(db: Database, now: datetime) -> bool:
+    """該開場次就開（建立例行場）；這次有新建立場次回傳 True。"""
+    if db.get_setting(BOUND_GROUP_KEY) is None:
+        return False  # 還沒有綁定群組，開了也沒人用
     game_date = target_game_date(now)
-    if game_date is None:
-        return False
-    pushed_key = f"card_pushed_{game_date.isoformat()}"
-    if db.get_setting(pushed_key) is not None:
-        return False
+    if game_date is None or db.get_week(game_date.isoformat()) is not None:
+        return False  # 不在報名期間，或場次已經存在（排程開過，或管理員手動 /開週 過）
 
-    # 已經手動 /開週 過就沿用，不會重複建立
-    db.create_week(game_date.isoformat(), default_deadline(game_date))
-    week = db.get_week(game_date.isoformat())
-    # 同一張卡也帶上目前開放中的加開場
-    extras = db.open_extras(now.date().isoformat())
-    await push(group_id, build_card(week, db.get_card_info(), extras))
-    db.set_setting(pushed_key, now.isoformat())
-    logger.info("pushed sign-up card for %s", game_date)
-    return True
+    created = db.create_week(game_date.isoformat(), default_deadline(game_date))
+    if created:
+        logger.info("opened week %s", game_date)
+    return created
 
 
-async def run_forever(db: Database, push: PushFn, interval_seconds: int = 60) -> None:
+async def run_forever(db: Database, interval_seconds: int = 60) -> None:
     while True:
         try:
-            await run_once(db, datetime.now(TZ), push)
+            open_due_week(db, datetime.now(TZ))
         except Exception:
             # 單次失敗不能讓排程停掉，留下完整錯誤，下一輪會重試
             logger.exception("scheduler tick failed")

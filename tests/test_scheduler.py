@@ -1,11 +1,10 @@
-import asyncio
 from datetime import date, datetime
 
 import pytest
 
 from app.db import BOUND_GROUP_KEY, Database
 from app.models import TZ
-from app.scheduler import next_open, run_once, target_game_date
+from app.scheduler import default_deadline, next_open, open_due_week, target_game_date
 
 
 def dt(month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
@@ -49,88 +48,48 @@ def db():
     return database
 
 
-class FakePush:
-    def __init__(self):
-        self.calls = []
+def test_opens_the_week_on_sunday_evening_with_default_deadline(db):
+    assert open_due_week(db, dt(10, 25, 20, 0)) is True
 
-    async def __call__(self, group_id, card):
-        self.calls.append((group_id, card))
-
-
-def tick(db, now, push) -> bool:
-    return asyncio.run(run_once(db, now, push))
-
-
-def test_pushes_card_and_opens_week_on_sunday_evening(db):
-    push = FakePush()
-
-    assert tick(db, dt(10, 25, 20, 0), push) is True
-
-    assert len(push.calls) == 1
-    group_id, card = push.calls[0]
-    assert group_id == "G1"
-    assert "11/1（日）籃球報名" in card.alt_text
     week = db.get_week("2026-11-01")
+    assert week.kind == "regular" and week.capacity == 20
     assert week.deadline == dt(10, 30, 12, 30)
 
 
-def test_pushed_card_includes_open_extra_sessions(db):
-    db.create_week("2026-11-06", dt(11, 6, 23, 59), 15, kind="extra", note="晚上7點")
-    push = FakePush()
+def test_opens_only_once_and_keeps_registrations(db):
+    assert open_due_week(db, dt(10, 25, 20, 0)) is True
+    member = db.upsert_member("U1", "Bob")
+    db.add_registration("2026-11-01", member.id, None, dt(10, 25, 20, 5))
 
-    tick(db, dt(10, 25, 20, 0), push)
+    assert open_due_week(db, dt(10, 25, 20, 1)) is False
+    assert open_due_week(db, dt(10, 27, 9, 0)) is False
 
-    text = str(push.calls[0][1].contents)
-    assert "11/1（日）籃球報名" in text and "11/6（五）加開場報名" in text
-
-
-def test_pushes_only_once_per_week(db):
-    push = FakePush()
-
-    assert tick(db, dt(10, 25, 20, 0), push) is True
-    assert tick(db, dt(10, 25, 20, 1), push) is False
-    assert tick(db, dt(10, 27, 9, 0), push) is False
-
-    assert len(push.calls) == 1
+    assert len(db.entries("2026-11-01")) == 1
 
 
 def test_catches_up_if_server_was_down_at_20_00(db):
-    push = FakePush()
-
-    assert tick(db, dt(10, 26, 8, 0), push) is True  # 週一早上才開機
+    assert open_due_week(db, dt(10, 26, 8, 0)) is True  # 週一早上才開機
 
 
 def test_does_nothing_outside_registration_window(db):
-    push = FakePush()
-
-    assert tick(db, dt(10, 31, 10, 0), push) is False
-    assert push.calls == []
+    assert open_due_week(db, dt(10, 31, 10, 0)) is False
+    assert db.get_week("2026-11-01") is None
 
 
 def test_does_nothing_when_group_not_bound():
-    push = FakePush()
+    unbound = Database(":memory:")
 
-    assert tick(Database(":memory:"), dt(10, 25, 20, 0), push) is False
-    assert push.calls == []
-
-
-def test_reuses_week_opened_manually(db):
-    from app.scheduler import default_deadline
-
-    db.create_week("2026-11-01", default_deadline(date(2026, 11, 1)))
-    push = FakePush()
-
-    assert tick(db, dt(10, 25, 20, 0), push) is True
-    assert len(push.calls) == 1
+    assert open_due_week(unbound, dt(10, 25, 20, 0)) is False
+    assert unbound.current_week() is None
 
 
-def test_failed_push_is_retried_next_tick(db):
-    class Failing:
-        async def __call__(self, group_id, card):
-            raise RuntimeError("LINE API down")
+def test_keeps_a_week_opened_manually_untouched(db):
+    manual_deadline = dt(10, 29, 18, 0)
+    db.create_week("2026-11-01", manual_deadline)
 
-    with pytest.raises(RuntimeError):
-        tick(db, dt(10, 25, 20, 0), Failing())
+    assert open_due_week(db, dt(10, 25, 20, 0)) is False
+    assert db.get_week("2026-11-01").deadline == manual_deadline
 
-    push = FakePush()
-    assert tick(db, dt(10, 25, 20, 1), push) is True  # 沒推成功就不會被標記為已推播
+
+def test_default_deadline_is_friday_noon_thirty():
+    assert default_deadline(date(2026, 11, 1)) == dt(10, 30, 12, 30)

@@ -46,11 +46,7 @@ db = Database(settings.db_path)
 async def lifespan(app: FastAPI):
     """伺服器啟動時開始排程、關閉時停止。Java 對照：@PostConstruct / @PreDestroy。"""
 
-    # 透過 line_client.push_card 呼叫（而不是直接傳函式），測試時才能替換成假的
-    async def push(group_id: str, card: Card) -> None:
-        await line_client.push_card(group_id, card)
-
-    task = asyncio.create_task(scheduler.run_forever(db, push))
+    task = asyncio.create_task(scheduler.run_forever(db))
     yield
     task.cancel()
 

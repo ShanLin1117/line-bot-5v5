@@ -10,7 +10,6 @@ from linebot.v3.messaging import (
     Configuration,
     FlexContainer,
     FlexMessage,
-    PushMessageRequest,
     ReplyMessageRequest,
     TextMessage,
 )
@@ -32,7 +31,8 @@ async def reply_text(reply_token: str, text: str) -> None:
     """回覆文字。
 
     reply_token 是 LINE 隨每個事件附上的一次性憑證，只能用一次、
-    且有效時間很短，所以必須在收到事件後立刻回覆。回覆不計入每月推播額度。
+    且有效時間很短，所以必須在收到事件後立刻回覆。回覆不計入每月訊息額度；
+    本專案刻意不使用推播（Push），因為群組推播按人數計費，160 人的群組一則就是 160 則。
     `async with` 類似 Java 的 try-with-resources：離開區塊時自動關閉連線。
     """
     async with AsyncApiClient(_config) as api_client:
@@ -45,14 +45,6 @@ async def reply_card(reply_token: str, card: Card) -> None:
     async with AsyncApiClient(_config) as api_client:
         await AsyncMessagingApi(api_client).reply_message(
             ReplyMessageRequest(reply_token=reply_token, messages=[build_flex_message(card)])
-        )
-
-
-async def push_card(group_id: str, card: Card) -> None:
-    """主動推播卡片到群組。推播會計入每月訊息額度，只用在每週自動發卡。"""
-    async with AsyncApiClient(_config) as api_client:
-        await AsyncMessagingApi(api_client).push_message(
-            PushMessageRequest(to=group_id, messages=[build_flex_message(card)])
         )
 
 
