@@ -17,7 +17,7 @@ from app.scheduler import default_deadline, next_open, target_game_date
 from app.teams import format_teams, split_into_teams
 
 HELP_TEXT = """📖 指令說明
-每週日 20:00 Bot 會自動發出報名卡，直接按按鈕即可。
+每週日 20:00 後，管理員會發出報名卡，直接按卡片上的按鈕即可。
 也可以用指令：
 /報名　報名本場次
 /取消　取消自己的報名
@@ -34,7 +34,7 @@ HELP_TEXT = """📖 指令說明
 /報名卡　重新發出報名卡（含所有開放的加開場）
 /加開場 11/06 20 晚上7點 中正運動中心　加開場次（人數、說明可省略，先搶先贏）
 /取消加開場 11/06　取消加開場，報名資料一併清除
-/排程狀態　查看自動推播的時間與狀態
+/排程狀態　查看自動開場次的時間與狀態
 /開週 10/25　手動開放例行場報名
 /設季打 3 7 12　依編號標記季打
 /取消季打 5　取消季打標記
@@ -495,15 +495,15 @@ def cmd_schedule_status(ctx: Context, member: Member, args: list[str]) -> str:
 
     target = target_game_date(ctx.now)
     if target is None:
-        lines.append("目前不在自動推播的報名期間")
+        lines.append("目前不在自動開場次的報名期間")
     else:
-        pushed_at = ctx.db.get_setting(f"card_pushed_{target.isoformat()}")
-        state = f"已於 {_fmt_moment(datetime.fromisoformat(pushed_at))} 推播" if pushed_at else "尚未推播（排程會在一分鐘內補發）"
-        lines.append(f"報名期間中的場次：{target.month}/{target.day}，報名卡{state}")
+        opened = ctx.db.get_week(target.isoformat()) is not None
+        state = "已開放，請傳 /報名卡 發出報名卡" if opened else "尚未建立（排程會在一分鐘內建立）"
+        lines.append(f"報名期間中的場次：{target.month}/{target.day}，{state}")
 
     game_date, opens_at = next_open(ctx.now)
-    lines.append(f"下次自動推播：{_fmt_moment(opens_at)}（場次 {game_date.month}/{game_date.day}）")
-    lines.append("提醒：伺服器與 ngrok 都要保持開著，排程才會執行")
+    lines.append(f"下次自動開場次：{_fmt_moment(opens_at)}（場次 {game_date.month}/{game_date.day}）")
+    lines.append("提醒：伺服器要保持開著排程才會執行。Bot 只開場次、不會主動發訊息，報名卡由管理員傳 /報名卡 發出")
     return "\n".join(lines)
 
 

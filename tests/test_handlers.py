@@ -278,20 +278,28 @@ def test_schedule_status_requires_admin(ready):
     assert "只有管理員" in say(ready, "Bob", "/排程狀態")
 
 
-def test_schedule_status_before_push(ready):
-    text = say(ready, "Admin", "/排程狀態")  # NOW = 10/18（日）20:00，剛進入 10/25 場次的報名期間
+def test_schedule_status_when_week_is_already_open(ready):
+    text = say(ready, "Admin", "/排程狀態")  # NOW = 10/18（日）20:00，10/25 場次已由 ready 開好
 
     assert "現在時間：10/18（日）20:00" in text
-    assert "10/25，報名卡尚未推播" in text
-    assert "下次自動推播：10/25（日）20:00（場次 11/1）" in text
+    assert "10/25，已開放，請傳 /報名卡 發出報名卡" in text
+    assert "下次自動開場次：10/25（日）20:00（場次 11/1）" in text
 
 
-def test_schedule_status_after_push(ready):
-    ready.set_setting("card_pushed_2026-10-25", at(5).isoformat())
+def test_schedule_status_when_week_is_not_created_yet(db):
+    say(db, "Admin", "/初始化")  # 已綁定，但還沒有任何場次
 
-    text = say(ready, "Admin", "/排程狀態")
+    text = say(db, "Admin", "/排程狀態")
 
-    assert "報名卡已於 10/18（日）20:05 推播" in text
+    assert "10/25，尚未建立" in text
+
+
+def test_schedule_status_outside_registration_window(ready):
+    later = datetime(2026, 10, 31, 10, 0, tzinfo=TZ)  # 週六，已過截止
+
+    text = say(ready, "Admin", "/排程狀態", now=later)
+
+    assert "目前不在自動開場次的報名期間" in text
 
 
 # --- 加開場 ---
