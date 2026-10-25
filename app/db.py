@@ -298,7 +298,8 @@ class Database:
         result = []
         for r in rows:
             is_guest = r["guest_name"] is not None
-            label = f"{r['guest_name']}（{r['display_name']} 帶）" if is_guest else r["display_name"]
+            # 朋友直接顯示登記的名字；帶人者的身分由報名紀錄的 member_id 保存，不需要寫在名單上
+            label = r["guest_name"] if is_guest else r["display_name"]
             result.append(
                 Entry(
                     id=r["id"],

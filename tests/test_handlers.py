@@ -166,7 +166,7 @@ def test_roster_shows_sections(ready):
 
     assert "10/25 🏀正取名單3位" in text
     assert "📍季打1位" in text and "1.Bob" in text
-    assert "📍零打2位" in text and "3.阿豪（Bob 帶）" in text
+    assert "📍零打2位" in text and "3.阿豪" in text and "帶" not in text
 
 
 # --- 成員與權限 ---
@@ -241,7 +241,7 @@ def test_guest_button_names_friends_automatically(ready):
 
     assert "Bob友1 報名成功（零打）" in first
     assert "Bob友2 報名成功（零打）" in second
-    assert "3.Bob友2（Bob 帶）" not in second  # 回覆只有一行狀態，不是整份名單
+    assert "3.Bob友2" not in second  # 回覆只有一行狀態，不是整份名單
 
     say(ready, "Bob", "/取消帶人 Bob友1", at(3))
     assert "Bob友1 報名成功" in press(ready, "Bob", "guest", now=at(4))  # 空出的編號會被重用
