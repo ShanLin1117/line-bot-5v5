@@ -1,0 +1,33 @@
+# Fly.io 部署設定。app 名稱在全世界必須唯一，被用過的話請改成別的名字。
+app = "line-bot-5v5-shanlin"
+primary_region = "nrt"  # 東京，離台灣最近
+
+[build]
+
+[env]
+  DB_PATH = "/data/line-bot.db"
+
+# 持久化磁碟：SQLite 資料庫檔案放在這裡，重新部署資料才不會消失。
+# 需要先建立：fly volumes create data --size 1 --region nrt
+[[mounts]]
+  source = "data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # 排程在程式裡，不能讓機器自動停機，也不能多於一台
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/health"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
